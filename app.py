@@ -17,36 +17,19 @@ sys.path.insert(0, str(project_root))
 LOGO_PATH = project_root / "assets" / "logo.png"
 LOGO_ICON_PATH = project_root / "assets" / "logo_icon.png"
 
-import uuid
-
 from loguru import logger
 
+from app.bootstrap import initialize_system
 from app.ui_icons import icon, icon_header, icon_line, inject_icon_styles
 from config import (
-    BM25_B,
-    BM25_K1,
-    BM25_WEIGHT,
-    DENSE_WEIGHT,
-    EMBEDDING_API_BASE,
     EMBEDDING_API_KEY,
     EMBEDDING_MODEL,
     EMBEDDING_PROVIDER,
     EMBEDDING_PROVIDERS,
     FAISS_EMBEDDING_DIM,
-    FAISS_ENABLED,
-    FAISS_INDEX_TYPE,
     FEW_SHOT_ENABLED,
-    FEW_SHOT_MIN_SIMILARITY,
     FEW_SHOT_TOP_K,
-    GOVERNED_HISTORY_BINDING_TTL_SECONDS,
-    GRAPH_MAX_DEPTH,
-    GRAPH_MAX_EDGES,
-    GRAPH_MAX_NODES,
-    GRAPH_MAX_STRING_LENGTH,
     HISTORY_AUTO_SAVE,
-    HISTORY_MAX_RECORDS,
-    INDEX_CACHE_DIR,
-    INDEX_CACHE_ENABLED,
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
@@ -54,44 +37,12 @@ from config import (
     LLM_PROVIDERS,
     LOG_FILE,
     LOG_LEVEL,
-    MAX_PREPARED_REQUESTS,
-    MYSQL_DATABASE,
-    MYSQL_HOST,
-    MYSQL_MAX_OVERFLOW,
-    MYSQL_PASSWORD,
-    MYSQL_POOL_SIZE,
-    MYSQL_POOL_TIMEOUT,
-    MYSQL_PORT,
-    MYSQL_USER,
-    NEO4J_CONNECTION_TIMEOUT,
-    NEO4J_DATABASE,
     NEO4J_ENABLED,
-    NEO4J_MAX_POOL_SIZE,
-    NEO4J_PASSWORD,
-    NEO4J_URI,
-    NEO4J_USER,
-    PREPARED_REQUEST_TTL_SECONDS,
-    PROMPT_MAX_LENGTH,
-    RETRIEVAL_TOP_K,
-    SEMANTIC_CONTEXT_MAX_CHARS,
-    SEMANTIC_CONTEXT_MAX_ITEMS,
-    SEMANTIC_DATASOURCE,
-    SEMANTIC_GOVERNANCE_ENABLED,
-    SEMANTIC_MODEL_DIR,
-    SQL_BLOCKED_TABLES,
     SQL_DIALECT,
-    SQL_EXPLAIN_ENABLED,
-    SQL_EXPLAIN_MAX_ESTIMATED_ROWS,
-    SQL_EXPLAIN_TIMEOUT_MS,
-    SQL_MAX_LENGTH,
     SQL_QUERY_MAX_ROWS,
-    SQL_QUERY_TIMEOUT_MS,
-    SQL_REPAIR_MAX_ATTEMPTS,
-    SQL_SCOPE_ENFORCEMENT,
-    SQL_VALIDATION_ENABLED,
     UPLOAD_MAX_BYTES,
 )
-from core.app_context import ApplicationContext, ApplicationConfigurationError
+from core.app_context import ApplicationConfigurationError
 from core.sql.validator import validate_sql
 from core.utils.correctness_ui import (
     execution_is_disabled,
@@ -258,158 +209,14 @@ st.set_page_config(
 inject_icon_styles()
 
 # ==================== 自定义 CSS 样式 ====================
-st.markdown("""
-<style>
-    /* 主标题样式 */
-    .main-title {
-        font-size: 2.5rem;
-        font-weight: 700;
-        background: linear-gradient(90deg, #1E88E5, #43A047);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.5rem;
-    }
-    
-    /* 副标题样式 */
-    .subtitle {
-        font-size: 1.1rem;
-        color: #666;
-        margin-bottom: 2rem;
-    }
-    
-    /* 卡片样式 */
-    .stCard {
-        border: 1px solid #e0e0e0;
-        border-radius: 10px;
-        padding: 20px;
-        background: white;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    
-    /* 按钮样式优化 */
-    .stButton > button {
-        border-radius: 8px;
-        font-weight: 600;
-        padding: 10px 24px;
-        transition: all 0.3s;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-    }
-    
-    /* 代码块样式 */
-    .stCode {
-        border-radius: 8px;
-        border: 1px solid #e0e0e0;
-    }
-    
-    /* 侧边栏样式 */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%);
-    }
-    
-    /* 标签页样式 */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        padding: 8px 16px;
-        font-weight: 500;
-    }
-    
-    /* 成功/错误提示优化 */
-    .stAlert {
-        border-radius: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+from app.styles import inject_global_styles
+
+inject_global_styles()
 
 # ==================== 会话状态初始化 ====================
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = False
+from app.state import init_session_state
 
-if 'session_id' not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-
-if 'app_context' not in st.session_state:
-    st.session_state.app_context = None
-
-if 'history' not in st.session_state:
-    st.session_state.history = []
-
-if 'last_sql' not in st.session_state:
-    st.session_state.last_sql = None
-
-if 'last_result' not in st.session_state:
-    st.session_state.last_result = None
-
-
-# ==================== 初始化函数 ====================
-def initialize_system():
-    """初始化系统组件（委托给 ApplicationContext）"""
-    logger.info("开始初始化系统...")
-
-    app_ctx = ApplicationContext(config={
-        'mysql_host': MYSQL_HOST, 'mysql_port': MYSQL_PORT,
-        'mysql_user': MYSQL_USER, 'mysql_password': MYSQL_PASSWORD,
-        'mysql_database': MYSQL_DATABASE,
-        'mysql_pool_size': MYSQL_POOL_SIZE,
-        'mysql_max_overflow': MYSQL_MAX_OVERFLOW,
-        'mysql_pool_timeout': MYSQL_POOL_TIMEOUT,
-        'history_max_records': HISTORY_MAX_RECORDS,
-        'governed_history_binding_ttl_seconds': GOVERNED_HISTORY_BINDING_TTL_SECONDS,
-        'neo4j_enabled': NEO4J_ENABLED, 'neo4j_uri': NEO4J_URI,
-        'neo4j_user': NEO4J_USER, 'neo4j_password': NEO4J_PASSWORD,
-        'neo4j_database': NEO4J_DATABASE,
-        'neo4j_max_pool_size': NEO4J_MAX_POOL_SIZE,
-        'neo4j_connection_timeout': NEO4J_CONNECTION_TIMEOUT,
-        'graph_max_nodes': GRAPH_MAX_NODES, 'graph_max_edges': GRAPH_MAX_EDGES,
-        'graph_max_depth': GRAPH_MAX_DEPTH,
-        'graph_max_string_length': GRAPH_MAX_STRING_LENGTH,
-        'llm_provider': LLM_PROVIDER, 'llm_model': LLM_MODEL,
-        'llm_api_key': LLM_API_KEY, 'llm_base_url': LLM_BASE_URL,
-        'retrieval_top_k': RETRIEVAL_TOP_K, 'prompt_max_length': PROMPT_MAX_LENGTH,
-        'sql_dialect': SQL_DIALECT,
-        'sql_validation_enabled': SQL_VALIDATION_ENABLED, 'sql_max_length': SQL_MAX_LENGTH,
-        'sql_query_max_rows': SQL_QUERY_MAX_ROWS,
-        'sql_query_timeout_ms': SQL_QUERY_TIMEOUT_MS,
-        'sql_scope_enforcement': SQL_SCOPE_ENFORCEMENT,
-        'sql_blocked_tables': SQL_BLOCKED_TABLES,
-        'semantic_governance_enabled': SEMANTIC_GOVERNANCE_ENABLED,
-        'semantic_model_dir': SEMANTIC_MODEL_DIR,
-        'semantic_datasource': SEMANTIC_DATASOURCE,
-        'semantic_context_max_chars': SEMANTIC_CONTEXT_MAX_CHARS,
-        'semantic_context_max_items': SEMANTIC_CONTEXT_MAX_ITEMS,
-        'sql_repair_max_attempts': SQL_REPAIR_MAX_ATTEMPTS,
-        'sql_explain_enabled': SQL_EXPLAIN_ENABLED,
-        'sql_explain_timeout_ms': SQL_EXPLAIN_TIMEOUT_MS,
-        'sql_explain_max_estimated_rows': SQL_EXPLAIN_MAX_ESTIMATED_ROWS,
-        'max_prepared_requests': MAX_PREPARED_REQUESTS,
-        'prepared_request_ttl_seconds': PREPARED_REQUEST_TTL_SECONDS,
-        'bm25_k1': BM25_K1, 'bm25_b': BM25_B,
-        'bm25_weight': BM25_WEIGHT, 'dense_weight': DENSE_WEIGHT,
-        'faiss_enabled': FAISS_ENABLED, 'faiss_embedding_dim': FAISS_EMBEDDING_DIM,
-        'faiss_index_type': FAISS_INDEX_TYPE,
-        'index_cache_enabled': INDEX_CACHE_ENABLED, 'index_cache_dir': INDEX_CACHE_DIR,
-        'embedding_provider': EMBEDDING_PROVIDER, 'embedding_model': EMBEDDING_MODEL,
-        'embedding_api_key': EMBEDDING_API_KEY, 'embedding_api_base': EMBEDDING_API_BASE,
-        'few_shot_enabled': FEW_SHOT_ENABLED, 'few_shot_top_k': FEW_SHOT_TOP_K,
-        'few_shot_min_similarity': FEW_SHOT_MIN_SIMILARITY,
-    })
-
-    if app_ctx.ensure_initialized():
-        st.session_state.app_context = app_ctx
-        st.session_state.initialized = True
-        logger.info("系统初始化完成")
-        return True
-    else:
-        st.session_state.initialization_error = app_ctx.initialization_error
-        logger.error("系统初始化失败")
-        return None
+init_session_state()
 
 
 # ==================== 模型配置辅助函数 ====================
