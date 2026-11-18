@@ -10,7 +10,7 @@ source .venv/bin/activate
 # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 ```
 
-因此手册统一使用 `python`、`pytest`、`ruff`，而不混用宿主解释器或硬编码虚拟环境路径。首次准备环境时，请按 README 使用 `python3.11 -m venv .venv`（或 `uv venv --python 3.11 --seed .venv`）、激活环境、`python -m pip install -r requirements.txt`，并在执行发布门禁前运行 `python -m pip install ruff==0.15.20`。该版本与仓库已验收的规则集一致；不固定版本会随 Ruff 新规则改变门禁结果。`uv` 创建的未 seed 环境没有 `pip`；应重建为上述 `--seed` 形式或用 `uv pip` 安装，而不要退回宿主 Python。
+因此手册统一使用 `python`、`pytest`、`ruff`，而不混用宿主解释器或硬编码虚拟环境路径。首次准备环境时，请按 README 使用 `python3.12 -m venv .venv`（或 `uv venv --python 3.12 --seed .venv`）、激活环境、`python -m pip install -r requirements.txt`，并在执行发布门禁前运行 `python -m pip install ruff==0.15.20`。该版本与仓库已验收的规则集一致；不固定版本会随 Ruff 新规则改变门禁结果。`uv` 创建的未 seed 环境没有 `pip`；应重建为上述 `--seed` 形式或用 `uv pip` 安装，而不要退回宿主 Python。
 
 ## 1. 默认值与边界
 

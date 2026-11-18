@@ -5,6 +5,61 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased] - 2026-11-19
+
+### Removed
+
+- **Neon/Qwen 旧实验链整组删除**（主链路零引用）：`app_neon.py`、
+  `core/llm/qwen_generator.py`（`core/llm/` 整目录）、
+  `core/knowledge/neon_knowledge.py`、`tests/test_neon_text2sql.py`、
+  `tests/test_llm_integration.py`。
+  `NEON_DB_URL` 环境变量保留：仍有活消费者
+  `core/sql/field_validator.py` 的 `__main__` 手动演示。
+- **core 层 28 个零引用死方法/死函数**（含 3 个传递性孤儿方法）、
+  3 个只赋值从未读取的属性、2 处死存储（`node_index`、`self.linter`），
+  以及 Neo4j async driver 残留（`execute_query_async` 及其初始化/teardown）。
+  清单见设计文档 §5.2；删除前逐名 grep 确认含测试在内零引用。
+- **过时项目全景页** `docs/project_overview.html`（早于 v1.4；
+  README 重写后为唯一权威文档）。
+- **停止跟踪运行时产物**：`logs/` 下 2 个日志、`.idea/` 下 6 个文件、
+  `llm_test_report.json`（`git rm --cached`，本地文件保留，均已被 .gitignore 覆盖）。
+
+### Changed
+
+- **UI 分层**：`app.py` 由 1492 行收敛为 110 行薄入口
+  （页面配置 → 样式/状态 → 侧栏 → 4 Tab 分发 → footer）；
+  新增 `app/styles.py`、`app/state.py`、`app/bootstrap.py`、`app/sidebar.py`、
+  `app/model_config.py` 与 `app/pages/sql_generation.py`、`app/pages/history.py`、
+  `app/pages/system_info.py`。纯搬运 + 最小胶水：widget key、session state key、
+  渲染顺序、CSS 全部保持不变。
+- **README 基于实际代码重写**：新增架构章节（分层图、逐包目录树、
+  自然语言查询数据流）；环境说明改为"在 Python 3.12 上开发验证"、
+  部署示例版本中性（`PYTHON_BIN=/path/to/python3`），删除未核实的
+  "Python 3.9+" 最低版本声明；功能/配置/测试描述与代码对齐
+  （默认 LLM 模型 `gemma4:E4B`、治理面板 16 项可编辑配置等）。
+  版本号保持 v1.4（housekeeping，不 bump）。
+
+### Added
+
+- `pyproject.toml`：ruff 门禁（target py312、line-length 100、
+  select E4/E7/E9/F，排除 python_deps/.venv/data/logs）+
+  `[tool.pytest.ini_options] testpaths=["tests"]`。
+- `tests/test_architecture.py`：4 项架构守护测试
+  （app.py 薄入口行数上限、UI 模块入口函数可调用、app/ 无循环 import、
+  自定义 CSS 注入生效）。
+
+### Security
+
+- **`.env` 停止跟踪**（`git rm --cached`；曾含 4 处 PASSWORD/API_KEY，远程为 GitHub）。
+  停止跟踪不会清除 git 历史中的凭据：**建议轮换相关凭据**；
+  历史清除（filter-repo/BFG）属破坏性操作，不在本次范围，须用户另行批准。
+
+### Verified
+
+- 全量回归：`938 passed, 14 skipped, 0 failed`
+  （`.venv/bin/python -m pytest tests -q`，Python 3.12.10）。
+- `.venv/bin/python -m ruff check .` 零告警（ruff 0.15.20）。
+
 ## [Unreleased] - 2026-10-29
 
 ### Fixed
