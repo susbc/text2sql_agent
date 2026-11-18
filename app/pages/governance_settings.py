@@ -4,7 +4,7 @@
 使正确性内核可以热开关，而不必修改 .env 后重启。
 """
 # ruff: noqa: E402
-from app.ui_icons import icon, icon_header, icon_line, inject_icon_styles
+from app.ui_icons import icon_header
 import streamlit as st
 from pathlib import Path
 import sys

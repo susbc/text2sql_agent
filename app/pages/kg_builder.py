@@ -5,7 +5,7 @@
 # ruff: noqa: E402
 import re
 
-from app.ui_icons import icon, icon_header, icon_line, inject_icon_styles
+from app.ui_icons import icon, icon_header
 import streamlit as st
 from pathlib import Path
 import sys
