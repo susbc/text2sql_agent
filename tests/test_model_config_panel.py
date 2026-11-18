@@ -422,7 +422,7 @@ def test_embedding_dimensions_come_from_the_catalog():
 
 def test_no_stale_1536_embedding_dim_fallback():
     """旧代码回落到 1536，与 FAISS_EMBEDDING_DIM 默认 1024 冲突。"""
-    source = APP_PY.read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "app" / "model_config.py").read_text(encoding="utf-8")
     assert '"dimensions", 1536' not in source
 
 
