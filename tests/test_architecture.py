@@ -31,4 +31,4 @@ def test_custom_css_injected():
     # 密封启动：复用 test_model_config_panel 的 FakeContext 模式，不依赖真实 DB
     from tests.test_model_config_panel import FakeContext, _base_config, _launch
     at = _launch(FakeContext(_base_config()))
-    assert any(".main-title" in m.value for m in at.markdown)
+    assert any(".main-title" in m.value and m.allow_html for m in at.markdown)
