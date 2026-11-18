@@ -149,9 +149,7 @@ text2sql_agent/
 │   ├── test_core.py            # 核心模块单元测试
 │   ├── test_offline.py         # 离线脚本式测试
 │   ├── test_comprehensive.py   # 综合测试与报告生成
-│   ├── test_graph_builder.py   # 知识图谱构建测试
-│   ├── test_llm_integration.py # LLM + Neo4j + Neon 集成测试
-│   └── test_neon_text2sql.py   # Neon PostgreSQL Text2SQL 测试
+│   └── test_graph_builder.py   # 知识图谱构建测试
 └── logs/                       # 日志目录
 ```
 
@@ -246,12 +244,7 @@ pytest tests
 
 # 运行需要 MySQL/Neo4j 的集成测试
 TEXT2SQL_RUN_DB_TESTS=1 pytest tests/test_comprehensive.py tests/test_graph_builder.py
-
-# 运行 Neon/LLM 集成测试前需要配置 NEON_DB_URL 和 LLM_API_KEY
-NEON_DB_URL=postgresql://... LLM_API_KEY=... pytest tests/test_llm_integration.py tests/test_neon_text2sql.py
 ```
-
-测试脚本统一放在 `tests/` 目录下。原先根目录的 `test_llm_integration.py`、`test_neon_text2sql.py` 已归入该目录，并改为通过环境变量读取外部服务配置，避免在测试代码中硬编码密钥和旧工作区路径。
 
 ## 正确性内核
 
@@ -296,10 +289,10 @@ SQL_EXPLAIN_ENABLED=false
 | **NEO4J_MAX_POOL_SIZE** | ✨ 最大连接池大小 | 50 |
 | **NEO4J_CONNECTION_TIMEOUT** | ✨ 连接超时（秒） | 30 |
 
-#### Neon 集成测试配置
+#### Neon 配置
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| NEON_DB_URL | Neon PostgreSQL 连接 URL，仅集成测试使用 | - |
+| NEON_DB_URL | Neon PostgreSQL 连接 URL，仅供 core/sql/field_validator.py 的手动演示使用（python core/sql/field_validator.py） | - |
 
 #### 启动脚本配置
 | 变量名 | 说明 | 默认值 |
