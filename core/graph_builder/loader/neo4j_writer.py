@@ -295,12 +295,6 @@ class Neo4jGraphBuilder:
         logger.info(f"建立 {count} 个概念 - 表关联")
         return count
 
-    def clear_graph(self):
-        """清空图谱（危险操作，谨慎使用）"""
-        cypher = "MATCH (n) DETACH DELETE n"
-        self.client._execute_write(cypher)
-        logger.warning("图谱已清空")
-
     def get_graph_stats(self) -> Dict[str, int]:
         """获取图谱统计信息"""
         stats = {}
@@ -327,32 +321,3 @@ class Neo4jGraphBuilder:
         """
         result = self.client.execute_query(cypher)
         return result if result else []
-
-    def get_table_details(self, table_name: str, database_id: int = None) -> Dict:
-        """获取表的详细信息"""
-        params = {"table_name": table_name}
-        if database_id:
-            params["database_id"] = database_id
-            cypher = """
-            MATCH (t:Table {name: $table_name, database_id: $database_id})
-            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)
-            OPTIONAL MATCH (from:Table)-[:CONNECTS]->(t)
-            OPTIONAL MATCH (t)-[:CONNECTS]->(to:Table)
-            RETURN t,
-                   collect(DISTINCT c) as columns,
-                   collect(DISTINCT from) as referenced_by,
-                   collect(DISTINCT to) as references
-            """
-        else:
-            cypher = """
-            MATCH (t:Table {name: $table_name})
-            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)
-            OPTIONAL MATCH (from:Table)-[:CONNECTS]->(t)
-            OPTIONAL MATCH (t)-[:CONNECTS]->(to:Table)
-            RETURN t,
-                   collect(DISTINCT c) as columns,
-                   collect(DISTINCT from) as referenced_by,
-                   collect(DISTINCT to) as references
-            """
-        result = self.client.execute_query(cypher, params)
-        return result[0] if result and result[0] else None

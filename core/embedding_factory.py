@@ -379,7 +379,3 @@ class EmbeddingFactory:
                 pass
             self._openai_client = None
 
-    def get_cache_size(self) -> int:
-        """获取缓存大小"""
-        return len(self._cache)
-

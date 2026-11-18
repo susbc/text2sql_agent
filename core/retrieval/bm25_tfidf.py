@@ -76,19 +76,6 @@ class TextPreprocessor:
 
         return result
 
-    def preprocess(self, text: str) -> str:
-        """
-        预处理文本，返回标准化文本
-
-        Args:
-            text: 输入文本
-
-        Returns:
-            str: 预处理后的文本
-        """
-        tokens = self.tokenize(text)
-        return ' '.join(tokens)
-
 
 class DenseVectorEmbedder:
     """稠密向量嵌入器 - 使用真实 Embedding 模型 (通义千问) 和 FAISS"""
@@ -515,8 +502,6 @@ class KnowledgeRetriever:
             embedding_dim=config.get('embedding_dim', 1536),
             index_type=config.get('index_type', 'flat'),
         )
-        self.node_index: Dict[int, Dict] = {}  # 节点索引
-
         # Few-Shot 示例检索配置
         self.few_shot_top_k = config.get('few_shot_top_k', 3)
         self.few_shot_min_similarity = config.get('few_shot_min_similarity', 0.5)
@@ -757,14 +742,6 @@ class KnowledgeRetriever:
 
         # 返回 top_k
         return results[:top_k]
-
-    def retrieve_tables(self, query: str, top_k: int = 5, database_id: Optional[int] = None) -> List[Tuple[Dict, float]]:
-        """检索相关的表"""
-        return self.retrieve(query, top_k, node_type_filter='table', database_id_filter=database_id)
-
-    def retrieve_columns(self, query: str, top_k: int = 5, database_id: Optional[int] = None) -> List[Tuple[Dict, float]]:
-        """检索相关的字段"""
-        return self.retrieve(query, top_k, node_type_filter='column', database_id_filter=database_id)
 
     def retrieve_all(self, query: str, top_k: int = 5, database_id: Optional[int] = None) -> List[Tuple[Dict, float]]:
         """检索所有类型的节点"""

@@ -2187,7 +2187,6 @@ def test_neo4j_connect_installs_unique_constraints_for_actual_import_keys(monkey
     driver = Mock()
     driver.session.return_value = session
     monkeypatch.setattr(module.GraphDatabase, "driver", Mock(return_value=driver))
-    monkeypatch.setattr(module.AsyncGraphDatabase, "driver", Mock(return_value=Mock()))
 
     client = Neo4jClient("bolt://unused", "user", "password")
 

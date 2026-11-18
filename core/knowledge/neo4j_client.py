@@ -1,9 +1,8 @@
 """
 Neo4j 图数据库客户端
 负责知识图谱的连接、查询和元数据同步
-支持异步查询和连接池配置
+支持连接池配置
 """
-import asyncio
 import json
 import uuid
 from contextlib import contextmanager
@@ -12,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
-from neo4j import AsyncGraphDatabase, GraphDatabase, Result
+from neo4j import GraphDatabase, Result
 from neo4j.exceptions import AuthError, ServiceUnavailable
 from neo4j.time import Date, DateTime, Duration, Time
 
@@ -37,7 +36,7 @@ _GRAPH_IDENTITY_CONSTRAINTS = (
 
 
 class Neo4jClient:
-    """Neo4j 图数据库客户端 - 支持连接池和异步查询"""
+    """Neo4j 图数据库客户端 - 支持连接池"""
 
     def __init__(self, uri: str, user: str, password: str, database: str = "neo4j",
                  max_connection_pool_size: int = 50, connection_timeout: int = 30,
@@ -65,11 +64,10 @@ class Neo4jClient:
         self.graph_max_depth = graph_max_depth
         self.graph_max_string_length = graph_max_string_length
         self.driver = None
-        self.async_driver = None
 
     def connect(self) -> bool:
         """
-        连接到 Neo4j 数据库（同步 + 异步驱动）
+        连接到 Neo4j 数据库
 
         Returns:
             bool: 连接是否成功
@@ -85,19 +83,6 @@ class Neo4jClient:
             # 验证连接
             self.driver.verify_connectivity()
             self._ensure_graph_identity_constraints()
-
-            # 异步驱动（用于高并发场景）
-            try:
-                self.async_driver = AsyncGraphDatabase.driver(
-                    self.uri,
-                    auth=(self.user, self.password),
-                    max_connection_pool_size=self.max_connection_pool_size,
-                    connection_timeout=self.connection_timeout
-                )
-                logger.info(f"Neo4j 同步 + 异步驱动初始化成功，pool_size={self.max_connection_pool_size}")
-            except Exception as e:
-                logger.warning(f"Neo4j 异步驱动初始化失败：{e}，将使用同步模式")
-                self.async_driver = None
 
             logger.info(f"成功连接到 Neo4j: {self.uri}")
             return True
@@ -125,15 +110,6 @@ class Neo4jClient:
         if self.driver:
             self.driver.close()
             self.driver = None
-        if self.async_driver:
-            async_driver = self.async_driver
-            self.async_driver = None
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                asyncio.run(async_driver.close())
-            else:
-                loop.create_task(async_driver.close())
         logger.info("Neo4j 连接池已关闭")
 
     @staticmethod
@@ -230,77 +206,6 @@ class Neo4jClient:
             _write_collector.reset(token)
         self._execute_write_batch(writes, chunk_size=chunk_size)
 
-    async def execute_query_async(self, query: str, parameters: Optional[Dict] = None) -> List[Dict]:
-        """
-        执行 Cypher 查询（异步）
-
-        Args:
-            query: Cypher 查询语句
-            parameters: 查询参数
-
-        Returns:
-            List[Dict]: 查询结果列表
-        """
-        if not self.async_driver:
-            logger.warning("Neo4j 异步驱动未初始化，使用同步模式")
-            return self.execute_query(query, parameters)
-
-        try:
-            async with self.async_driver.session(database=self.database) as session:
-                result = await session.run(query, parameters or {})
-                records = []
-                async for record in result:
-                    records.append(record.data())
-                return records
-        except Exception as e:
-            safe_error = truncate_log(mask_sensitive(str(e)), 160)
-            logger.error(
-                f"Neo4j 异步查询执行失败：{safe_error}, query={sanitize_query(query)}"
-            )
-            return []
-
-    def get_all_nodes(self, label: Optional[str] = None) -> List[Dict]:
-        """
-        获取所有节点
-
-        Args:
-            label: 节点标签过滤（可选）
-
-        Returns:
-            List[Dict]: 节点列表
-        """
-        if label:
-            safe_label = self._safe_identifier(label)
-            query = f"MATCH (n:`{safe_label}`) RETURN n"
-        else:
-            query = "MATCH (n) RETURN n"
-
-        results = self.execute_query(query)
-        nodes = []
-        for record in results:
-            node_data = record.get('n', {})
-            nodes.append({
-                'id': node_data.id if hasattr(node_data, 'id') else None,
-                'element_id': node_data.element_id if hasattr(node_data, 'element_id') else None,
-                'labels': list(node_data.labels) if hasattr(node_data, 'labels') else [],
-                'properties': dict(node_data)
-            })
-        return nodes
-
-    def get_table_nodes(self) -> List[Dict]:
-        """
-        获取所有表节点
-
-        Returns:
-            List[Dict]: 表节点列表
-        """
-        query = """
-        MATCH (t:Table)
-        RETURN t.name AS name, coalesce(t.description, t.comment) AS description,
-               t.schema AS schema, t.database_id AS database_id
-        """
-        return self.execute_query(query)
-
     def get_database_list(self) -> List[Dict]:
         """
         获取所有数据库列表
@@ -325,39 +230,6 @@ class Neo4jClient:
             }
             for r in results
         ]
-
-    def get_column_nodes(self, table_name: Optional[str] = None) -> List[Dict]:
-        """
-        获取字段节点
-
-        Args:
-            table_name: 表名过滤（可选）
-
-        Returns:
-            List[Dict]: 字段节点列表
-        """
-        column_fields = """
-            c.name AS name, coalesce(c.data_type, c.type) AS type,
-            coalesce(c.description, c.comment) AS description,
-            c.is_primary_key AS is_primary_key, c.is_nullable AS is_nullable
-        """
-        if table_name:
-            # 新图谱为 (Table)-[:HAS_COLUMN]->(Column)，旧格式为 (Column)-[:BELONGS_TO]->(Table)，两种都兼容
-            query = f"""
-            MATCH (t:Table {{name: $table_name}})
-            OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:Column)
-            OPTIONAL MATCH (c2:Column)-[:BELONGS_TO]->(t)
-            WITH [x IN collect(c) + collect(c2) WHERE x IS NOT NULL] as cols
-            UNWIND cols as c
-            RETURN {column_fields}
-            """
-            return self.execute_query(query, {"table_name": table_name})
-        else:
-            query = f"""
-            MATCH (c:Column)
-            RETURN {column_fields}
-            """
-            return self.execute_query(query)
 
     def get_relationships(self, start_node: Optional[str] = None,
                          rel_type: Optional[str] = None) -> List[Dict]:
@@ -476,36 +348,6 @@ class Neo4jClient:
         """
         results = self.execute_query(query, {"query": query_text, "limit": top_k})
         return results
-
-    def get_node_by_name(self, name: str, label: Optional[str] = None) -> Optional[Dict]:
-        """
-        根据名称获取节点
-
-        Args:
-            name: 节点名称
-            label: 节点标签（可选）
-
-        Returns:
-            Optional[Dict]: 节点信息
-        """
-        if label:
-            safe_label = self._safe_identifier(label)
-            query = """
-            MATCH (n:`{label}`)
-            WHERE n.name = $name
-            RETURN n
-            """.format(label=safe_label)
-        else:
-            query = """
-            MATCH (n)
-            WHERE n.name = $name
-            RETURN n
-            """
-
-        results = self.execute_query(query, {"name": name})
-        if results:
-            return results[0].get('n')
-        return None
 
     def export_knowledge_graph(self) -> Dict[str, Any]:
         """
@@ -1402,41 +1244,4 @@ class Neo4jClient:
         except Exception as e:
             logger.error(f"清除知识图谱失败：{e}")
             return {"nodes": 0, "relationships": 0, "error": str(e)}
-
-    def sync_metadata_to_mysql(self, mysql_client) -> int:
-        """
-        同步元数据到 MySQL（基于 get_schema_metadata，兼容 HAS_COLUMN 与 BELONGS_TO 两种图谱约定）
-
-        Args:
-            mysql_client: MySQL 客户端实例
-
-        Returns:
-            int: 同步的记录数
-        """
-        metadata = self.get_schema_metadata()
-        count = 0
-
-        # 同步表信息
-        for table in metadata['tables']:
-            table_name = table.get('name')
-            if table_name:
-                mysql_client.upsert_table_schema(
-                    table_name=table_name,
-                    table_comment=table.get('description') or '',
-                    properties=table
-                )
-                count += 1
-
-        # 同步字段信息（直接按表的字段明细同步，不再依赖关系名匹配）
-        for table_name, columns in metadata.get('table_column_details', {}).items():
-            for column in columns:
-                mysql_client.upsert_column_schema(
-                    table_name=table_name,
-                    column_name=column.get('name'),
-                    column_type=column.get('type') or 'VARCHAR',
-                    column_comment=column.get('description') or ''
-                )
-
-        logger.info(f"同步了 {count} 条元数据到 MySQL")
-        return count
 

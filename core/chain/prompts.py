@@ -101,30 +101,10 @@ class SQLPromptTemplates:
         self.dialect = dialect
         self.max_length = max(1000, int(max_length))
 
-        # SQL 生成主模板
-        self.sql_generation_template = PromptTemplate(
-            input_variables=[
-                "user_query", "schema_info", "knowledge_info", "few_shot_examples", "semantic_context"
-            ],
-            template=SQL_GENERATION_SYSTEM_PROMPT + "\n\n用户查询：{user_query}\n\nSQL:"
-        )
-
         # Schema 信息格式化模板
         self.schema_format_template = PromptTemplate(
             input_variables=["tables", "columns", "relationships"],
             template=self._get_schema_format()
-        )
-
-        # 知识信息格式化模板
-        self.knowledge_format_template = PromptTemplate(
-            input_variables=["matched_nodes"],
-            template=self._get_knowledge_format()
-        )
-
-        # SQL 校验模板
-        self.sql_validation_template = PromptTemplate(
-            input_variables=["sql", "schema_info", "error_message"],
-            template=self._get_validation_template()
         )
 
         # SQL 修复模板
@@ -139,12 +119,6 @@ class SQLPromptTemplates:
             template=self._get_explain_template()
         )
 
-        # 查询改写模板
-        self.query_rewrite_template = PromptTemplate(
-            input_variables=["user_query", "context"],
-            template=self._get_rewrite_template()
-        )
-
     def _get_schema_format(self) -> str:
         """获取 Schema 格式化模板"""
         return """表结构信息:
@@ -155,26 +129,6 @@ class SQLPromptTemplates:
 
 表关系:
 {relationships}"""
-
-    def _get_knowledge_format(self) -> str:
-        """获取知识信息格式化模板"""
-        return """匹配的知识节点:
-{matched_nodes}
-
-以上知识可能对理解用户查询有帮助。"""
-
-    def _get_validation_template(self) -> str:
-        """获取 SQL 校验模板"""
-        return """请检查以下 SQL 语句是否正确:
-
-SQL: {sql}
-
-Schema: {schema_info}
-
-{error_message}
-
-如果 SQL 有错误，请指出问题并给出修正建议。
-如果 SQL 正确，请回复 "VALID"。"""
 
     def _get_fix_template(self) -> str:
         """获取 SQL 修复模板"""
@@ -196,16 +150,6 @@ SQL: {sql}
 Schema: {schema_info}
 
 请用简洁的中文解释这个 SQL 查询的目的和执行逻辑。"""
-
-    def _get_rewrite_template(self) -> str:
-        """获取查询改写模板"""
-        return """用户查询可能不够清晰或完整，请根据上下文进行改写:
-
-原始查询：{user_query}
-
-上下文信息：{context}
-
-请改写查询使其更清晰明确，保持原意。只输出改写后的查询。"""
 
     def format_schema_info(self, tables: List[Dict], columns: List[Dict],
                           relationships: Optional[List[Dict]] = None) -> str:
@@ -424,33 +368,6 @@ Schema: {schema_info}
     def _require_total_budget(self, messages: List, error: str) -> None:
         if sum(len(message.content) for message in messages) > self.max_length:
             raise SemanticPromptBudgetError(error)
-
-    def create_validation_messages(self, sql: str, schema_info: str,
-                                  error_message: str = "") -> List:
-        """
-        创建 SQL 校验消息列表
-
-        Args:
-            sql: SQL 语句
-            schema_info: Schema 信息
-            error_message: 错误信息
-
-        Returns:
-            List: 消息列表
-        """
-        content = self.sql_validation_template.format(
-            sql=self._bounded_data(sql, int(self.max_length * 0.3)),
-            schema_info=self._bounded_data(schema_info, int(self.max_length * 0.5)),
-            error_message=self._bounded_data(
-                error_message or "请检查语法和逻辑是否正确",
-                int(self.max_length * 0.2),
-            ),
-        )
-
-        return [
-            SystemMessage(content="你是一个 SQL 校验专家，负责检查 SQL 语句的正确性。"),
-            HumanMessage(content=content)
-        ]
 
     def create_fix_messages(self, sql: str, error: str, schema_info: str) -> List:
         """

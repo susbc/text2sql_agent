@@ -87,18 +87,3 @@ class SchemaExtractResult(BaseModel):
         """获取下一个数据库 ID"""
         self._db_id_counter += 1
         return self._db_id_counter
-
-    def get_tables_by_database(self, db_name: str) -> List[TableIR]:
-        """获取指定数据库的所有表"""
-        return [t for t in self.tables if t.database == db_name]
-
-    def get_columns_by_table(self, table_name: str) -> List[ColumnIR]:
-        """获取指定表的所有字段"""
-        for table in self.tables:
-            if table.name == table_name:
-                return table.columns
-        return []
-
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
-        return self.model_dump()

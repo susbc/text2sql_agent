@@ -47,9 +47,6 @@ class GovernedHistoryIdentity:
             "governance_validated": validated,
         }
 
-    def retrieval_fields(self) -> dict[str, object]:
-        return self.storage_fields(validated=True)
-
     def matches(self, record: Mapping[str, Any]) -> bool:
         validated = record.get("governance_validated")
         validation_is_true = validated is True or (

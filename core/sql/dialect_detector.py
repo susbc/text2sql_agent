@@ -132,12 +132,3 @@ class SQLDialectDetector:
             if db["database_id"] == database_id:
                 return db
         return None
-
-    def get_all_databases(self) -> List[Dict]:
-        """获取所有数据库列表"""
-        return self.database_cache.copy()
-
-    def refresh_metadata(self):
-        """刷新数据库元数据缓存"""
-        self.database_cache = []
-        self._load_database_metadata()

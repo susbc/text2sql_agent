@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 import sqlfluff
 from loguru import logger
-from sqlfluff.core import Linter
 from sqlfluff.core.errors import SQLParseError
 
 from ..utils.log_sanitizer import log_safe_exception
@@ -164,7 +163,6 @@ class SQLValidator:
         """
         self.dialect = dialect
         self.rules = rules
-        self.linter = Linter(dialect=dialect, rules=rules)
 
     def validate(self, sql: str) -> Dict[str, Any]:
         """
@@ -376,25 +374,6 @@ class SQLValidator:
 
         return result
 
-    def get_violation_types(self, sql: str) -> Dict[str, int]:
-        """
-        获取违规类型统计
-
-        Args:
-            sql: SQL 语句
-
-        Returns:
-            Dict: 类型计数字典
-        """
-        result = sqlfluff.lint(sql, dialect=self.dialect)
-
-        type_counts = {}
-        for violation in result:
-            code = violation.get('code', 'UNKNOWN')
-            type_counts[code] = type_counts.get(code, 0) + 1
-
-        return type_counts
-
 
 class SQLExecutionValidator:
     """SQL 执行前校验器 - 业务规则校验"""
@@ -459,12 +438,8 @@ class SQLExecutionValidator:
             'warnings': warnings
         }
 
-    def _extract_tables(self, sql: str) -> List[str]:
-        """使用 AST 提取真实表引用。"""
-        return validate_query_scope(sql, dialect=self.dialect)['tables']
 
-
-# 模块级 Linter 缓存，避免重复创建（按方言缓存）
+# 模块级 SQLValidator 缓存，避免重复创建（按方言缓存）
 _validator_cache: Dict[str, 'SQLValidator'] = {}
 
 

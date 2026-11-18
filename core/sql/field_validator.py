@@ -4,7 +4,7 @@ SQL 字段验证器
 使用 sqlglot 进行 AST 解析，精准提取表名和字段名
 """
 import os
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 from loguru import logger
 from sqlalchemy import create_engine, inspect
@@ -101,37 +101,6 @@ class SQLFieldValidator:
         logger.debug(f"从 SQL 中提取到表名：{tables}")
         return tables
 
-    def _get_table_name(self, table_node: Table) -> Optional[str]:
-        """
-        从 Table 节点获取表名
-
-        Args:
-            table_node: sqlglot Table 节点
-
-        Returns:
-            表名
-        """
-        # 处理 schema.table 或 database.schema.table 格式
-        parts = []
-
-        # 获取 db (database)
-        if table_node.db:
-            parts.append(table_node.db.name)
-
-        # 获取 schema
-        if table_node.args.get('schema'):
-            parts.append(table_node.args['schema'].name)
-
-        # 获取 table name
-        if table_node.name:
-            parts.append(table_node.name)
-
-        if parts:
-            # 返回完整表名（包含 schema 前缀）或仅表名
-            return parts[-1]  # 只返回表名用于验证
-
-        return None
-
     def extract_columns_from_sql(self, sql: str) -> Set[str]:
         """
         从 SQL 中提取字段名（使用 sqlglot AST 解析）
@@ -156,22 +125,6 @@ class SQLFieldValidator:
 
         logger.debug(f"从 SQL 中提取到字段名：{columns}")
         return columns
-
-    def _get_column_name(self, col_node: Column) -> Optional[str]:
-        """
-        从 Column 节点获取字段名
-
-        Args:
-            col_node: sqlglot Column 节点
-
-        Returns:
-            字段名
-        """
-        # 获取列名（不包含表前缀）
-        if col_node.name:
-            return col_node.name
-
-        return None
 
     def extract_table_alias_mapping(self, sql: str) -> Dict[str, str]:
         """
@@ -287,31 +240,6 @@ class SQLFieldValidator:
         logger.info(f"SQL 验证结果：{'有效' if is_valid else '无效'} - {len(errors)} 个错误")
 
         return is_valid, errors
-
-    def suggest_fix(self, sql: str, errors: List[str]) -> str:
-        """
-        提供修复建议
-
-        Args:
-            sql: 原始 SQL
-            errors: 错误列表
-
-        Returns:
-            修复建议
-        """
-        if not errors:
-            return "SQL 有效，无需修复"
-
-        suggestions = ["发现以下问题:"]
-        for error in errors:
-            suggestions.append(f"- {error}")
-
-        suggestions.append("\n建议:")
-        suggestions.append("1. 检查表名是否正确")
-        suggestions.append("2. 检查字段名是否与 schema 一致")
-        suggestions.append("3. 确保 JOIN 条件使用正确的关联字段")
-
-        return "\n".join(suggestions)
 
     def debug_parse(self, sql: str) -> Dict[str, Any]:
         """

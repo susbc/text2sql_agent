@@ -1082,46 +1082,6 @@ class MySQLClient:
         """
         return self.execute_query(query, {"table_name": table_name})
 
-    def save_feedback(self, history_id: int, feedback_type: str,
-                     feedback_score: Optional[int] = None,
-                     feedback_comment: Optional[str] = None,
-                     corrected_sql: Optional[str] = None) -> bool:
-        """
-        保存用户反馈
-
-        Args:
-            history_id: 历史记录 ID
-            feedback_type: 反馈类型
-            feedback_score: 评分
-            feedback_comment: 反馈备注
-            corrected_sql: 修正后的 SQL
-
-        Returns:
-            bool: 是否成功
-        """
-        # 同时更新历史记录的反馈字段
-        if feedback_score:
-            self.execute_update(
-                "UPDATE sql_generation_history SET feedback_score = :feedback_score WHERE id = :history_id",
-                {"feedback_score": feedback_score, "history_id": history_id},
-                raise_on_error=True,
-            )
-
-        query = """
-        INSERT INTO user_feedback (history_id, feedback_type, feedback_score,
-                                   feedback_comment, corrected_sql)
-        VALUES (:history_id, :feedback_type, :feedback_score, :feedback_comment, :corrected_sql)
-        """
-        params = {
-            "history_id": history_id,
-            "feedback_type": feedback_type,
-            "feedback_score": feedback_score,
-            "feedback_comment": feedback_comment,
-            "corrected_sql": corrected_sql
-        }
-        result = self.execute_update(query, params, raise_on_error=True)
-        return result > 0
-
     def get_statistics(self) -> Dict:
         """
         获取统计信息（合并为单次查询，减少数据库往返）
