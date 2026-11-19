@@ -46,11 +46,11 @@ def show_sql_generation() -> None:
             selected_idx = db_labels.index(selected_db_label)
             selected_db_id = db_options[selected_idx]
             selected_db_info = next((db for db in db_list if db["database_id"] == selected_db_id), None)
-            selected_db_type = selected_db_info["db_type"] if selected_db_info else "mysql"
+            selected_db_type = selected_db_info["db_type"] if selected_db_info else "sqlite"
         else:
             st.selectbox("选择数据库", options=["暂无数据库"], disabled=True)
             selected_db_id = None
-            selected_db_type = "mysql"
+            selected_db_type = "sqlite"
 
     with col1:
         user_query = st.text_area(
@@ -89,6 +89,8 @@ def show_sql_generation() -> None:
         )
     with col3:
         copy_btn = st.button("复制 SQL", use_container_width=True)
+
+    st.caption("执行目标：SQLite 业务库")
 
     # 生成 SQL
     if generate_btn and user_query:

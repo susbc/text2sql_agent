@@ -12,6 +12,7 @@ from config import (
     FEW_SHOT_ENABLED,
     FEW_SHOT_TOP_K,
     NEO4J_ENABLED,
+    SQLITE_PATH,
     UPLOAD_MAX_BYTES,
 )
 from core.utils.upload_limits import UploadValidationError, read_uploaded_text
@@ -212,11 +213,14 @@ def render_sidebar() -> None:
                     st.markdown(icon_line("Neo4j", "network"), unsafe_allow_html=True)
                     st.caption("已启用" if ctx.neo4j_client and ctx.neo4j_client.driver else "未连接")
                 else:
-                    st.markdown(icon_line("MySQL 模式", "database"), unsafe_allow_html=True)
+                    st.markdown(icon_line("SQLite 模式", "database"), unsafe_allow_html=True)
                     st.caption("元数据模式")
             with col2:
-                st.markdown(icon_line("MySQL", "database"), unsafe_allow_html=True)
-                st.caption("已连接" if ctx.db_client else "未连接")
+                st.markdown(icon_line("SQLite", "database"), unsafe_allow_html=True)
+                db_status = "已连接" if (ctx.db_client and ctx.db_client.engine) else "未连接"
+                st.caption(db_status)
+                db_path = getattr(ctx.db_client, "path", None) or SQLITE_PATH
+                st.caption(f"文件：{Path(db_path).name}")
 
             st.markdown(icon_line("Embedding", "plug"), unsafe_allow_html=True)
             st.caption(f"{EMBEDDING_PROVIDER}/{EMBEDDING_MODEL}")
@@ -446,7 +450,7 @@ def render_sidebar() -> None:
     - BM25 + FAISS 混合检索
     - LangChain + LLM 智能生成
     - SQLFluff 语法校验
-    - Neo4j/MySQL 双模式
+    - Neo4j/SQLite 双模式
     """)
 
         st.markdown("---")

@@ -211,6 +211,7 @@ def show_governance_settings() -> None:
         f"`{current['semantic_model_dir']}/{current['semantic_datasource']}.yaml` "
         "自动编译，校验失败时保持原有配置不变。"
     )
+    st.caption("语义治理仅支持 MySQL（SQLite 模式下不可用）")
 
     # ── 语义治理 ──
     with st.expander("── 语义治理 ──", expanded=False):

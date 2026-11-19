@@ -40,7 +40,7 @@ _PUBLIC_LEGACY_ERRORS = frozenset(
         "SQL 修复服务调用失败",
         "无法修复 SQL",
         "SQL 生成暂时不可用，请稍后重试",
-        "MySQL 客户端未连接",
+        "SQLite 客户端未连接",
         "执行记录状态更新失败",
         "语义治理模式下请重新生成 SQL",
         "历史记录不存在",

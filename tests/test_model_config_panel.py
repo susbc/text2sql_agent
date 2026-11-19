@@ -437,3 +437,18 @@ def test_status_card_reflects_active_config_not_env():
     at = _launch(ctx)
     body = " ".join(m.value for m in at.markdown)
     assert "status-card-model" in body
+
+
+def test_storage_status_and_notes_reflect_sqlite():
+    """存储迁移后：侧栏/系统信息展示 SQLite 状态，执行目标与治理限制有注明。"""
+    ctx = FakeContext(_base_config())
+    at = _launch(ctx)
+    body = " ".join(m.value for m in at.markdown)
+    assert "SQLite:" in body
+    assert "文件路径：" in body
+    assert "- MySQL:" not in body
+    assert "MySQL 模式" not in body
+    assert "Neo4j/SQLite 双模式" in body
+    captions = " ".join(c.value for c in at.caption)
+    assert "执行目标：SQLite 业务库" in captions
+    assert "语义治理仅支持 MySQL（SQLite 模式下不可用）" in captions

@@ -12,6 +12,7 @@ from config import (
     LOG_FILE,
     NEO4J_ENABLED,
     SQL_DIALECT,
+    SQLITE_PATH,
 )
 from core.utils.governance_settings import active_semantic_version
 
@@ -50,16 +51,31 @@ def show_system_info() -> None:
         """)
 
     with config_col2:
-        # 脱敏展示：隐藏主机地址和端口详情，仅显示连接状态
-        mysql_status = "已连接" if (ctx and ctx.db_client and ctx.db_client.engine) else "未连接"
+        # SQLite 为本地文件库：展示文件路径与连接状态，无主机/端口信息
+        db_client = ctx.db_client if ctx else None
+        db_status = "已连接" if (db_client and db_client.engine) else "未连接"
+        sqlite_path = getattr(db_client, "path", None) or SQLITE_PATH
+        table_count = history_count = "未知"
+        if db_client and db_client.engine:
+            try:
+                db_stats = db_client.get_statistics()
+                table_count = db_stats.get("total_tables", 0)
+                history_count = db_stats.get("total_history", 0)
+            except Exception:
+                table_count = history_count = "未知"
         neo4j_status = "已连接" if NEO4J_ENABLED and (ctx and ctx.neo4j_client and ctx.neo4j_client.driver) else "未连接/未启用"
         st.markdown("""
         **数据库配置**
-        - MySQL: {mysql_status}
+        - SQLite: {db_status}
+        - 文件路径：{sqlite_path}
+        - 表数：{table_count} ｜ 历史数：{history_count}
         - Neo4j: {neo4j_status}
         - SQL 方言：{dialect}
         """.format(
-            mysql_status=mysql_status,
+            db_status=db_status,
+            sqlite_path=sqlite_path,
+            table_count=table_count,
+            history_count=history_count,
             neo4j_status=neo4j_status,
             dialect=SQL_DIALECT
         ))

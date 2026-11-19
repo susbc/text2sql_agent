@@ -405,7 +405,7 @@ def render_graph_builder():
 
         #### 数据来源
         1. **DDL 文件**: 上传包含 CREATE TABLE 语句的 SQL 文件
-        2. **活体数据库**: 直接连接 MySQL/Oracle/Spark 数据库
+        2. **活体数据库**: 直接连接 SQLite（默认）/MySQL 数据库
 
         #### AI 增强功能
         - **业务标签**: LLM 自动分析表结构，生成 3-5 个业务标签

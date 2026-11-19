@@ -647,7 +647,7 @@ def run_tests_and_generate_report():
 | 文本检索模块 | 7 | 分词、检索、索引 |
 | SQL 校验模块 | 8 | 语法校验、安全检查 |
 | SQL 生成器模块 | 3 | SQL 提取 |
-| MySQL 客户端 | 6 | 连接、CRUD、统计 |
+| SQLite 客户端 | 6 | 连接、CRUD、统计 |
 | Neo4j 客户端 | 2 | 连接、初始化 |
 | 提示词模板 | 3 | 模板初始化、格式化 |
 | LLM 工厂 | 2 | 工厂创建 |
@@ -665,7 +665,7 @@ def run_tests_and_generate_report():
 2. **文本检索** - BM25+TF-IDF 混合检索算法
 3. **SQL 校验** - SQLFluff 语法校验和安全检查
 4. **SQL 生成** - SQL 提取和格式化
-5. **数据存储** - MySQL 和 Neo4j 客户端
+5. **数据存储** - SQLite 和 Neo4j 客户端
 6. **提示词系统** - 模板初始化和格式化
 7. **LLM 集成** - 工厂模式创建
 8. **边界情况** - 空值、特殊字符、Unicode

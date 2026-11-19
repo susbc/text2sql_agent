@@ -1157,7 +1157,7 @@ class SQLGenerator:
             governance_identity = None
 
         if not self.db_client:
-            return {'status': 'error', 'error': 'MySQL 客户端未连接', 'data': None}
+            return {'status': 'error', 'error': 'SQLite 客户端未连接', 'data': None}
 
         history: Mapping[str, Any] | None = None
         if history_id is not None:
@@ -1289,7 +1289,7 @@ class SQLGenerator:
                 'data': None,
             }
         if not self.db_client:
-            return {'status': 'error', 'error': 'MySQL 客户端未连接'}
+            return {'status': 'error', 'error': 'SQLite 客户端未连接'}
         history = self.db_client.get_history_detail(history_id)
         if not history:
             return {'status': 'error', 'error': '历史记录不存在'}
