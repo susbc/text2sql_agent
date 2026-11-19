@@ -11,7 +11,7 @@
 > **最新版本**: v1.4
 > **核心升级**: 多模型 UI 热切换 + 安全加固 + SQL 注入防护 + 全链路代码质量优化
 >
-> 2026-10-25 起的变更记录于 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]` 段（含本次项目整理与架构规范）；
+> 2026-10-25 起的变更记录于 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]` 段（含项目整理、架构规范与 MySQL→SQLite 存储迁移）；
 > 本文档基于实际代码核对重写，版本号保持 v1.4 不变。
 
 ## 📸 功能展示
@@ -53,7 +53,7 @@
 - 📜 **历史记录**: 完整的 SQL 生成和执行历史管理
 - 🗄️ **数据库选择**: 支持选择不同数据库，生成对应方言的 SQL
 - 🔗 **Neo4j 知识图谱**: 从图数据库同步元数据
-- 💾 **MySQL 存储**: 历史数据和元数据持久化
+- 💾 **SQLite 存储**: 单文件嵌入式库（默认 `data/text2sql.db`），历史数据和元数据持久化，无需数据库服务
 - 🏗️ **知识图谱构建**: 支持 DDL 文件/活体数据库构建图谱
 
 ### 新增功能 (v1.4)
@@ -136,7 +136,7 @@
 ├──────────────────────────────────────────────────────────────────┤
 │ 基础设施     config.py（环境变量加载 + 启动校验）                   │
 │              core/provider_catalog + core/config_validation       │
-│              MySQL（SQLAlchemy QueuePool）  Neo4j（Driver 连接池）  │
+│              SQLite（SQLAlchemy 单文件库）  Neo4j（Driver 连接池）  │
 │              LLM 提供商（LangChain）        Embedding 提供商        │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -144,11 +144,11 @@
 - UI 层只负责渲染与会话状态：`app.py` 依次完成页面配置、图标/CSS 注入、会话状态初始化、
   侧栏渲染与四个 Tab 分发；系统初始化由 `app/bootstrap.initialize_system()` 委托
   `ApplicationContext` 完成，实例存入 `st.session_state.app_context`。
-- 应用层是唯一组件入口：LLM、Neo4j、MySQL、Embedding、检索器、SQL 链、语义注册表、
+- 应用层是唯一组件入口：LLM、Neo4j、SQLite、Embedding、检索器、SQL 链、语义注册表、
   正确性内核、SQL 生成器均由 `ApplicationContext` 延迟初始化并持有；热重载先构建完整候选
   组件图、校验一致性后再原子发布，失败时旧组件保持不变。
 - 领域层不反向依赖 UI；`core/` 各子包之间通过构造注入协作（如 `SQLGenerator` 接收
-  检索器、SQL 链、MySQL/Neo4j 客户端与正确性内核）。
+  检索器、SQL 链、SQLite/Neo4j 客户端与正确性内核）。
 
 ### 目录结构
 
@@ -184,7 +184,7 @@ text2sql_agent/
 │   │   ├── generator.py        # SQLGenerator：生成/执行/历史主流程与治理历史绑定
 │   │   ├── correctness.py      # 正确性内核 CorrectnessPipeline：快照钉住、fail-closed、一次纠错
 │   │   ├── validator.py        # SQLFluff 语法校验、sqlglot 只读/范围校验、行数与超时约束
-│   │   ├── preflight.py        # MySQL EXPLAIN 预检（墙钟超时、全局并发上限、fail-closed）
+│   │   ├── preflight.py        # MySQL EXPLAIN 预检（mysql-only 休眠内核；墙钟超时、并发上限、fail-closed）
 │   │   ├── dialect_detector.py # 目标方言/数据库检测（Neo4j 元数据 + 关键词/表名模式）
 │   │   ├── field_validator.py  # sqlglot AST 字段验证器（含 NEON_DB_URL 手动演示入口）
 │   │   ├── join_extractor.py   # JOIN 提取引擎（sqlglot AST，支持复杂 ON 条件拆分）
@@ -202,7 +202,7 @@ text2sql_agent/
 │   ├── knowledge/
 │   │   └── neo4j_client.py     # Neo4j 客户端：Driver 连接池、标识符白名单、图谱导出/导入/清除
 │   ├── history/
-│   │   ├── mysql_client.py     # MySQL 客户端：QueuePool、6 张管理表幂等自建、历史与元数据读写
+│   │   ├── sqlite_client.py    # SQLite 客户端：单文件库、6 应用表幂等自建+种子加载、历史与元数据读写
 │   │   ├── identity.py         # 治理历史不可变身份（数据源/方言/语义版本/内容摘要）
 │   │   └── proof.py            # 进程内短时效 HMAC 证明（治理历史写入/终态化防伪造）
 │   ├── graph_builder/          # 知识图谱构建流水线
@@ -221,6 +221,7 @@ text2sql_agent/
 │       └── upload_limits.py    # 上传文件大小与 UTF-8 编码校验
 ├── scripts/
 │   ├── start_server.sh         # 一键部署：.env 兜底创建、依赖哈希安装、streamlit 启动
+│   ├── migrate_mysql_to_sqlite.py  # 一次性 MySQL→SQLite 迁移（历史工具，种子已提交入库）
 │   ├── 01_export_graph_to_md.py    # Neo4j 图谱导出为 Markdown 快照
 │   ├── 02_schema_search_cli.py     # Schema Agent CLI（供外部 AI Agent 调用）
 │   ├── compile_semantic_models.py  # 语义模型 YAML 命令行编译器
@@ -231,9 +232,13 @@ text2sql_agent/
 │   ├── test_architecture.py    # 架构守护：薄入口行数/模块入口/无循环 import/CSS 注入
 │   ├── test_core.py            # 核心模块单元测试
 │   ├── test_offline.py         # 离线脚本式测试（不依赖外部服务）
-│   ├── test_comprehensive.py   # 综合测试；真实 MySQL/Neo4j 集成由 TEXT2SQL_RUN_DB_TESTS 开关 gated
+│   ├── test_comprehensive.py   # 综合测试；SQLite 用临时文件库，真实 Neo4j 集成由 TEXT2SQL_RUN_DB_TESTS 开关 gated
 │   ├── test_graph_builder.py   # 图谱构建测试；真实 Neo4j 装载同上开关（另需 NEO4J_ENABLED=true）
 │   ├── test_regressions.py     # 已修复缺陷的回归测试
+│   ├── test_sqlite_client.py   # SQLiteClient 单测（DDL/种子门控/schema 迁移/看门狗/治理往返）
+│   ├── test_migration_reconciliation.py  # 迁移种子行数/方言对账
+│   ├── test_sqlite_execution_security.py # SQLite 执行安全边界（应用表禁查）
+│   ├── test_few_shot_dialect_filter.py   # Few-Shot 按生成方言过滤
 │   ├── test_model_config_panel.py  # 模型配置面板 Streamlit AppTest 集成（密封上下文，不连真实 DB）
 │   ├── test_governance_panel.py    # 治理面板 Streamlit AppTest 集成
 │   ├── test_governance_settings.py # 治理面板辅助层单元测试
@@ -244,14 +249,15 @@ text2sql_agent/
 │   └── evaluation/             # Golden 评测测试
 ├── semantic_models/            # Git 管理的语义模型 YAML（default.yaml）+ JSON Schema；.compiled/ 为运行时产物
 ├── eval/                       # Golden Set 评测用例（golden/）与结果示例（examples/）
-├── schema.sql                  # MySQL 管理表建表语句（连接成功后亦会幂等自动创建）
+├── schema.sql                  # SQLite 应用表参考 DDL（镜像 seed_history.sql；首次连接自动幂等建表）
 ├── requirements.txt            # 运行依赖
 ├── pyproject.toml              # ruff 门禁（E4/E7/E9/F）+ pytest testpaths 配置
 ├── CHANGELOG.md                # Keep-a-Changelog 变更记录（[Unreleased] 段）
 ├── env.example                 # 环境变量模板
 ├── assets/                     # 品牌资源（logo.png / logo_icon.png / logo_full.png）
 ├── docs/                       # 功能截图、语义治理运维手册、设计文档
-└── data/schemas/               # 图谱导出的 Markdown 快照
+└── data/                       # seed_business.sql / seed_history.sql 部署种子 + 运行时 SQLite 库
+    └── schemas/                # 图谱导出的 Markdown 快照
 ```
 
 运行时产物不在 git 跟踪中：`.gitignore` 以文件模式覆盖 `logs/*.log` 与 `logs/*.log.*`
@@ -271,14 +277,14 @@ text2sql_agent/
 目标数据库/方言确定
    ├─ UI 选择的数据库（Neo4j Database 节点）优先
    ├─ 否则 SQLDialectDetector：库名 / 类型关键词 / 表名模式
-   └─ 兜底 config.SQL_DIALECT（启用治理时强制 mysql）
+   └─ 兜底 config.SQL_DIALECT（默认 sqlite；启用治理时强制 mysql）
    ↓
 查询改写（QueryRewriteChain；ApplicationContext 默认 enable_rewrite=False，即不启用）
    ↓
 生成上下文组装
    ├─ 混合检索 retrieve_all：BM25 + FAISS 归一化加权融合（默认 0.6/0.4），按 database_id 过滤
-   ├─ Few-Shot 示例：FAISS 历史索引（仅"校验+执行双成功"记录；治理开启时初始为空索引）
-   └─ Schema 信息：Neo4j 表/列/CONNECTS 权重关系优先，未启用或失败回退 MySQL 元数据
+   ├─ Few-Shot 示例：FAISS 历史索引（仅"校验+执行双成功"记录，按当前生成方言过滤；治理开启时初始为空索引）
+   └─ Schema 信息：Neo4j 表/列/CONNECTS 权重关系优先，未启用或失败回退 SQLite 元数据
    ↓
 [治理开启] CorrectnessPipeline.prepare_generation
    在 LLM 调用前钉住不可变语义快照并渲染有界语义上下文（预算不足直接拒绝）
@@ -317,16 +323,17 @@ SQLGenerationChain.generate / generate_async
 只读安全复核（单条 SELECT/集合查询，禁副作用节点与函数）+ 查询范围复核
    ↓
 constrain_read_query：外层 LIMIT 收紧至 max_rows+1（默认 501，用于截断判定）
-   MySQL 追加 MAX_EXECUTION_TIME 提示（默认 10000ms）
+   mysql 方言追加 MAX_EXECUTION_TIME 提示（治理/mysql 生成方言路径）
    ↓
-MySQL execute_query_limited 执行（返回 truncated 截断标记）
+SQLite execute_query_limited 执行（threading.Timer+interrupt 看门狗，
+   预算 SQL_QUERY_TIMEOUT_MS 默认 10000ms；返回 truncated 截断标记）
    ↓
 历史回写（success / fail；治理路径 finalize_governed_sql_execution + 证明）
    ↓
 执行成功 → 该历史记录晋升 Few-Shot 索引（add_history_record，闭环增强）
 ```
 
-要点：检索与 Schema 都有 Neo4j → MySQL 的回退路径；治理关闭时保留既有生成/执行行为，
+要点：检索与 Schema 都有 Neo4j → SQLite 的回退路径；治理关闭时保留既有生成/执行行为，
 治理开启时所有校验 fail-closed（快照不可用、证明缺失、绑定不匹配一律拒绝而非放行）。
 
 ### 知识图谱构建流水线（v1.2 新增）
@@ -342,7 +349,7 @@ MySQL execute_query_limited 执行（返回 truncated 截断标记）
 数据源:
 ├── DDL 文件 (.sql)
 ├── JSON 文件 (.json)
-└── 活体数据库 (当前支持 MySQL；其他方言使用 DDL/JSON 导入)
+└── 活体数据库 (仅支持 SQLite；其他方言使用 DDL/JSON 导入)
 
 输出:
 └── Neo4j 知识图谱
@@ -384,17 +391,16 @@ CONNECTS 关系属性:
 old×(1-η)+η 提升单侧权重、新关系按比例收缩旧关系，之后同一表对权重和可能 ≠ 1，
 直到下次构建装载规范化。
 
-### 连接池架构
+### 存储与连接池架构
 
 ```
 应用层
    ↓
-SQLAlchemy QueuePool (MySQL)
-   ├─ pool_size = 10
-   ├─ max_overflow = 20
-   ├─ pool_timeout = 30s
-   ├─ pool_pre_ping = true (自动检测失效连接)
-   └─ pool_recycle = 3600s (1 小时回收)
+SQLAlchemy SQLite 引擎 (core/history/sqlite_client.py，单文件嵌入式库)
+   ├─ 文件库：NullPool（每次 checkout 新建连接、归还即关闭，
+   │  避免池化连接残留 progress_handler/interrupt 状态）
+   ├─ :memory:：StaticPool 单共享连接 + per-client RLock 序列化
+   └─ 每连接 PRAGMA foreign_keys=ON（反馈表级联删除依赖）
 
 Neo4j Driver Pool
    ├─ max_connection_pool_size = 50
@@ -445,21 +451,22 @@ python -m pip install ruff==0.15.20
 
 ```bash
 cp env.example .env
-# 编辑 .env 文件，配置数据库和 LLM
+# 编辑 .env 文件，配置 SQLite 路径、Neo4j 和 LLM
 ```
 
 `.env` 不被 git 跟踪；模板见 `env.example`，完整变量说明见下文"配置说明"章节。
 
 ### 4. 初始化数据库
 
-```bash
-# MySQL
-mysql -u root -p < schema.sql
-```
+无需手工步骤：应用首次连接成功即自动创建 SQLite 库（默认 `data/text2sql.db`，
+`SQLITE_PATH` 可配），幂等创建 6 张应用表（`sql_generation_history`、`user_feedback`、
+`table_schema`、`column_schema`、`knowledge_metadata`、`retrieval_terms`）、执行治理列
+迁移，并原子加载 `data/seed_business.sql`（8 业务表 30 行）与 `data/seed_history.sql`
+（历史 50 行）种子，开箱可用。
 
-`schema.sql` 包含 6 张管理表（`sql_generation_history`、`user_feedback`、`table_schema`、
-`column_schema`、`knowledge_metadata`、`retrieval_terms`）。应用连接验证成功后也会幂等
-自动创建这些表（`CREATE TABLE IF NOT EXISTS`）并执行治理列迁移，首次指向新库开箱可用。
+`schema.sql` 是 6 张应用表的 SQLite 参考 DDL（逐字镜像 `data/seed_history.sql` 的
+canonical DDL）；如需手工建库可执行 `sqlite3 data/text2sql.db < schema.sql`，
+种子加载仍由应用首次连接自动完成。
 
 ### 5. 启动应用
 
@@ -484,7 +491,7 @@ chmod +x scripts/start_server.sh
 - 根据 `requirements.txt` 哈希判断依赖是否变化，未变化时跳过安装。
 - 通过 `python -m streamlit run app.py` 启动服务，默认监听 `0.0.0.0:8501`。
 
-知识库索引默认每次启动从 MySQL/Neo4j 重建（`INDEX_CACHE_ENABLED=false`），避免图谱
+知识库索引默认每次启动从 SQLite/Neo4j 重建（`INDEX_CACHE_ENABLED=false`），避免图谱
 覆盖导入后仍命中旧缓存；这是应用行为，与启动脚本无关。
 
 常用部署参数可以写入 `.env`，也可以临时通过环境变量覆盖。`PYTHON_BIN` 用于指定部署机
@@ -505,7 +512,7 @@ INSTALL_DEPS=0 ./scripts/start_server.sh
 # Ruff 门禁（pyproject.toml：target py312，select E4/E7/E9/F）
 .venv/bin/python -m ruff check .
 
-# 真实数据库集成测试（开关在各测试文件内，默认关闭）
+# 真实 Neo4j 集成测试（开关在各测试文件内，默认关闭）
 TEXT2SQL_RUN_DB_TESTS=1 .venv/bin/python -m pytest tests/test_comprehensive.py tests/test_graph_builder.py -q
 ```
 
@@ -516,14 +523,14 @@ TEXT2SQL_RUN_DB_TESTS=1 .venv/bin/python -m pytest tests/test_comprehensive.py t
   面板类集成测试（`test_model_config_panel.py` / `test_governance_panel.py`）用
   Streamlit AppTest 与密封上下文渲染，同样不连真实数据库。
 - **开关 gated 集成测试**：`tests/conftest.py` 只做 `sys.path` 设置；是否连接真实
-  MySQL/Neo4j 由各测试文件内的 `TEXT2SQL_RUN_DB_TESTS` 开关决定（`!= "1"` 时跳过）。
-  `test_comprehensive.py` 覆盖真实 MySQL 与 Neo4j 集成；`test_graph_builder.py` 的真实
-  Neo4j 装载测试另需 `NEO4J_ENABLED=true`。旧 Neon/Qwen 外部 LLM 实验链已删除，
-  不存在"缺配置自动跳过的外部 LLM 测试"。
+  Neo4j 由各测试文件内的 `TEXT2SQL_RUN_DB_TESTS` 开关决定（`!= "1"` 时跳过）。
+  `test_comprehensive.py` 的 SQLite 集成用按实例临时文件库（无需外部服务）；
+  `test_graph_builder.py` 的真实 Neo4j 装载测试另需 `NEO4J_ENABLED=true`。
+  旧 Neon/Qwen 外部 LLM 实验链已删除，不存在"缺配置自动跳过的外部 LLM 测试"。
 - **架构守护**：`tests/test_architecture.py` 4 项——`app.py` 薄入口行数上限、
   UI 模块入口函数可调用、`app/` 无循环 import、自定义 CSS 注入生效。
 
-截至本次整理，全量套件为 938 passed / 14 skipped（计数随测试增删漂移，以结构说明为准）。
+截至 SQLite 迁移完成，全量套件为 1067 passed / 9 skipped（计数随测试增删漂移，以结构说明为准）。
 
 ## 正确性内核
 
@@ -549,17 +556,10 @@ SQL_EXPLAIN_ENABLED=false
 #### 数据库配置
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| MYSQL_HOST | MySQL 主机 | localhost |
-| MYSQL_PORT | MySQL 端口 | 3306 |
-| MYSQL_USER | MySQL 用户 | root |
-| MYSQL_PASSWORD | MySQL 密码 | root |
-| MYSQL_DATABASE | MySQL 数据库 | text2sql_db |
-| **MYSQL_POOL_SIZE** | MySQL 连接池大小 | 10 |
-| **MYSQL_MAX_OVERFLOW** | 最大溢出连接数 | 20 |
-| **MYSQL_POOL_TIMEOUT** | 获取连接超时（秒） | 30 |
+| SQLITE_PATH | SQLite 库文件路径（应用存储单文件库，首次连接自动建表+加载种子） | data/text2sql.db |
 | HISTORY_MAX_RECORDS | SQL 历史保留上限（必须为 1–10000） | 1000 |
 | HISTORY_AUTO_SAVE | 生成后自动保存历史记录 | true |
-| TEXT2SQL_RUN_DB_TESTS | 是否运行真实数据库集成测试（测试文件内读取） | 0 |
+| TEXT2SQL_RUN_DB_TESTS | 是否运行真实 Neo4j 集成测试（测试文件内读取） | 0 |
 
 #### Neo4j 配置
 | 变量名 | 说明 | 默认值 |
@@ -674,20 +674,20 @@ SQL_EXPLAIN_ENABLED=false
 #### SQL 执行与语义治理配置
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| SQL_DIALECT | 默认 SQL 方言（启用治理时仅支持 mysql） | mysql |
+| SQL_DIALECT | 默认 SQL 方言（默认 sqlite；启用治理时仅支持 mysql） | sqlite |
 | SQL_VALIDATION_ENABLED | 生成后是否做 SQLFluff/只读校验 | true |
 | SQL_MAX_LENGTH | SQL 长度上限（字符） | 2000 |
 | SQL_QUERY_MAX_ROWS | 执行返回行数上限 | 500 |
-| SQL_QUERY_TIMEOUT_MS | MySQL 执行超时提示（毫秒） | 10000 |
-| SQL_SCOPE_ENFORCEMENT | 强制查询范围校验（允许表/系统 schema/黑名单） | true |
-| SQL_BLOCKED_TABLES | 内部表黑名单（逗号分隔） | sql_generation_history,user_feedback,table_schema,column_schema |
+| SQL_QUERY_TIMEOUT_MS | 执行超时预算（毫秒）：SQLite 看门狗 interrupt；mysql 方言为超时提示 | 10000 |
+| SQL_SCOPE_ENFORCEMENT | 强制查询范围校验（允许表/系统 schema） | true |
+| SQL_BLOCKED_TABLES | 应用表黑名单（逗号分隔，无条件生效，独立于 SQL_SCOPE_ENFORCEMENT） | knowledge_metadata,table_schema,column_schema,sql_generation_history,retrieval_terms,user_feedback |
 | SEMANTIC_GOVERNANCE_ENABLED | 语义治理开关 | false |
 | SEMANTIC_MODEL_DIR | 语义模型目录 | semantic_models |
 | SEMANTIC_DATASOURCE | 语义数据源（对应 `<datasource>.yaml`） | default |
 | SEMANTIC_CONTEXT_MAX_CHARS | 语义上下文最大字符 | 2400 |
 | SEMANTIC_CONTEXT_MAX_ITEMS | 语义上下文最大条目 | 24 |
 | SQL_REPAIR_MAX_ATTEMPTS | 治理纠错次数上限（0 或 1） | 1 |
-| SQL_EXPLAIN_ENABLED | MySQL EXPLAIN 预检开关（依赖语义治理） | false |
+| SQL_EXPLAIN_ENABLED | MySQL EXPLAIN 预检开关（mysql-only 休眠，依赖语义治理；SQLite 模式不可启用） | false |
 | SQL_EXPLAIN_TIMEOUT_MS | EXPLAIN 预检超时（毫秒） | 3000 |
 | SQL_EXPLAIN_MAX_ESTIMATED_ROWS | 估算扫描行数上限（0 表示不限制） | 0 |
 | MAX_PREPARED_REQUESTS | 进程内已预备治理请求上限 | 256 |
@@ -772,7 +772,7 @@ EMBEDDING_API_KEY=sk-xxx
 1. 上传 DDL 文件或 JSON 文件（文件类型可选自动检测/DDL/JSON）
 2. 填写数据库名称和类型（可选 mysql、oracle、hive、postgresql、sparksql；postgresql/sparksql 的校验方言名映射缺口见"数据库选择"小节）
 3. 选择是否"启用 AI 增强"
-4. 点击"开始构建"（活体数据库方式填写连接信息后点击"连接并构建"，当前仅支持 MySQL）
+4. 点击"开始构建"（活体数据库方式填写 SQLite 文件路径后点击"连接并构建"；活体抽取仅支持 SQLite）
 5. 构建成功后系统自动重置应用上下文并重新初始化（刷新检索索引）；侧边栏"重新初始化系统"按钮可手动触发同一流程，但非必经步骤
 
 **DDL 文件示例**:
@@ -814,10 +814,10 @@ SQL 结构:
 ### 4. 数据库选择（v1.2 新增）
 
 在"SQL 生成"页面左侧，可以选择目标数据库：
-- 下拉框显示：`数据库名 (数据库类型)`（列表来自 Neo4j Database 节点；Neo4j 未启用时不可选）
-- 选择不同数据库后，系统会生成对应方言的 SQL
-- 下拉框提供 MySQL、Oracle、Hive、PostgreSQL、SparkSQL 五种选项
-- **已知问题**：MySQL/Oracle/Hive 走通完整校验与执行链路；PostgreSQL/SparkSQL 因校验器方言名映射缺口（SQLFluff 需 `postgres`、sqlglot 需 `spark`），当前生成后校验会失败（fail-closed 拒绝），代码暂未修复
+- 下拉框显示：`数据库名 (数据库类型)`（列表来自 Neo4j Database 节点；Neo4j 未启用时不可选，兜底方言 sqlite）
+- 选择不同数据库后，系统会生成对应方言的 SQL；迁移后配置库 Database 节点 db_type=sqlite
+- 执行目标统一为 SQLite 业务库（页面注明"执行目标：SQLite 业务库"）；其他方言的 DDL 可经知识图谱构建页的离线通道导入（mysql、oracle、hive、postgresql、sparksql 五种选项）
+- **已知问题**：MySQL/Oracle/Hive 走通完整校验链路；PostgreSQL/SparkSQL 因校验器方言名映射缺口（SQLFluff 需 `postgres`、sqlglot 需 `spark`），当前生成后校验会失败（fail-closed 拒绝），代码暂未修复
 
 ### 5. 图谱导出/导入（v1.2 新增）
 
@@ -842,13 +842,13 @@ SQL 结构:
 
 | 机制 | 实现位置 | 作用 |
 |------|----------|------|
-| MySQL/Neo4j 连接池 | `core/history/mysql_client.py`、`core/knowledge/neo4j_client.py` | 复用连接，避免每次请求新建 |
+| Neo4j 连接池 | `core/knowledge/neo4j_client.py` | 复用连接，避免每次请求新建（SQLite 为嵌入式单文件库，NullPool 归还即关闭） |
 | 异步 LLM 调用 | `core/chain/sql_chain.py` `generate_async` | ainvoke 路径供异步调用方使用 |
 | 两路混合检索 | `core/retrieval/bm25_tfidf.py` | BM25 词频 + FAISS 语义互补；FAISS 搜索上限 100 控制开销 |
 | 权重优先关联 | `core/chain/prompts.py` | 关系按权重降序注入提示词，减少多表 JOIN 试错 |
 | Embedding LRU 缓存 | `core/embedding_factory.py` | OrderedDict 淘汰，上限 10000 条，防内存无限增长 |
 | Linter 按方言缓存 | `core/sql/validator.py` | 复用 SQLValidator 包装对象；SQLFluff 简单 API 每次调用内部构造 Linter |
-| 统计单查询 | `core/history/mysql_client.py` `get_statistics` | 5 项统计合并为 1 次带子查询的 SQL |
+| 统计单查询 | `core/history/sqlite_client.py` `get_statistics` | 5 项统计合并为 1 次带子查询的 SQL |
 | 索引磁盘缓存（可选） | `core/retrieval/bm25_tfidf.py` | `INDEX_CACHE_ENABLED=true` 时跳过启动重建 |
 
 ## 🤖 AI Agent 专属技能
@@ -924,7 +924,7 @@ python scripts/01_export_graph_to_md.py
 
 - **前端**: Streamlit
 - **后端**: Python（在 Python 3.12 上开发验证；部署可经 `PYTHON_BIN` 指定解释器）
-- **数据库**: MySQL (连接池), Neo4j (连接池)
+- **数据库**: SQLite (嵌入式单文件库), Neo4j (连接池)
 - **LLM**: LangChain (异步调用)
 - **检索**: BM25, FAISS
 - **Embedding**: 多提供商（默认本地 Ollama bge-m3；可选 DashScope / OpenAI）
@@ -933,10 +933,10 @@ python scripts/01_export_graph_to_md.py
 ## ⚠️ 注意事项
 
 1. **安全性**: 只允许执行单条、无副作用的只读 SELECT/集合查询
-2. **性能**: 执行自动收紧外层 LIMIT 至行数上限并为 MySQL 添加执行超时提示；无 WHERE/LIMIT 的查询会给出全表扫描警告
+2. **性能**: 执行自动收紧外层 LIMIT 至行数上限，SQLite 经看门狗（interrupt）实施超时预算；无 WHERE/LIMIT 的查询会给出全表扫描警告
 3. **准确性**: 依赖知识库的完整性
 4. **LLM 成本**: 注意 API 调用频率
-5. **连接池**: 高并发场景建议调大 pool_size
+5. **连接**: SQLite 为嵌入式单文件库，无服务端连接池；Neo4j 高并发场景可调大 NEO4J_MAX_POOL_SIZE
 6. **凭据**: `.env` 不被 git 跟踪；历史上曾入库的凭据需轮换（见 CHANGELOG `[Unreleased]` Security 段）
 
 ## 📝 更新日志

@@ -1,5 +1,5 @@
 """
-SQLite 数据库客户端（MySQLClient 的 drop-in 替代）
+SQLite 数据库客户端（应用存储唯一后端，替代已移除的 MySQL 客户端）
 负责元数据存储、历史记录管理；应用表与业务表同处一个嵌入式 SQLite 文件库。
 
 设计决策（spec §5.1/§5.2/§5.3，Task 2）：
@@ -23,7 +23,7 @@ SQLite 数据库客户端（MySQLClient 的 drop-in 替代）
 - database 属性＝"main"（SQLite 真实 schema 名；spec §5.3 allowed_schemas 按 main 处理）。
 - get_table_schema/get_column_schema 改查 sqlite_master + PRAGMA table_info，仅返回
   业务表（排除 6 应用表，**大小写归一**——SQLite 标识符 ASCII 大小写不敏感），
-  供安全边界（Task 4）；返回键形与 MySQLClient 对齐。
+  供安全边界（Task 4）；返回键形与迁移前客户端对齐。
 - ON UPDATE CURRENT_TIMESTAMP 已去除：所有应用 UPDATE 显式置 updated_at（行为不变）。
 """
 import json
@@ -257,7 +257,7 @@ def _split_sql_script(script: str) -> List[str]:
 
 
 class SQLiteClient:
-    """SQLite 数据库客户端 - 沿用 MySQLClient 公开接口（SQLAlchemy-SQLite 引擎）"""
+    """SQLite 数据库客户端 - 沿用迁移前历史客户端公开接口（SQLAlchemy-SQLite 引擎）"""
 
     explain_query_enforces_wall_clock_deadline = True
 

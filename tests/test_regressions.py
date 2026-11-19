@@ -1,13 +1,14 @@
 """已修复逻辑缺陷的回归测试。"""
 import logging
 import re
+import sqlite3
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import Barrier, Event, Thread
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -782,9 +783,9 @@ def test_guarded_history_update_binds_session_sql_and_validation_status():
 
 def test_history_governance_schema_migration_is_idempotent():
     """Existing rows stay ungoverned while missing columns and the lookup index are added once."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
     required_columns = [
         "semantic_datasource",
         "semantic_dialect",
@@ -794,10 +795,10 @@ def test_history_governance_schema_migration_is_idempotent():
     ]
     client.execute_query = Mock(
         side_effect=[
-            [{"column_name": "id"}],
+            [{"name": "id"}],
             [],
-            [{"column_name": name} for name in ["id", *required_columns]],
-            [{"index_name": "idx_governed_few_shot"}],
+            [{"name": name} for name in ["id", *required_columns]],
+            [{"name": "sql_generation_history_idx_governed_few_shot"}],
         ]
     )
     client.execute_update = Mock(return_value=0)
@@ -817,35 +818,52 @@ def test_history_governance_schema_migration_is_idempotent():
         statement for statement in statements if "add column governance_validated" in statement
     )
     assert "not null default 0" in governance_statement
-    assert any("add index idx_governed_few_shot" in statement for statement in statements)
+    assert any(
+        "create index if not exists sql_generation_history_idx_governed_few_shot" in statement
+        for statement in statements
+    )
     client.execute_update.assert_not_called()
 
 
 def test_history_governance_schema_migration_tolerates_concurrent_duplicates():
     """Concurrent startup may win the same DDL race without hiding other errors."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    class DuplicateSchemaChange(Exception):
-        def __init__(self, errno):
-            self.errno = errno
-
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
     client.execute_query = Mock(
         side_effect=[
-            [{"column_name": "id"}],
+            [{"name": "id"}],
             [],
         ]
     )
+    duplicate_errors = [
+        sqlite3.OperationalError(f"duplicate column name: {name}")
+        for name in (
+            "semantic_datasource",
+            "semantic_dialect",
+            "semantic_version",
+            "semantic_content_sha256",
+            "governance_validated",
+        )
+    ]
     client.execute_update = Mock(
         side_effect=[
-            *(DuplicateSchemaChange(1060) for _ in range(5)),
-            DuplicateSchemaChange(1061),
+            *duplicate_errors,
+            sqlite3.OperationalError(
+                "index sql_generation_history_idx_governed_few_shot already exists"
+            ),
         ]
     )
 
     client._migrate_history_schema()
 
     assert client.execute_update.call_count == 6
+
+    # 非重复类错误不得被吞掉（fail-closed 迁移）
+    client.execute_query = Mock(side_effect=[[{"name": "id"}], []])
+    client.execute_update = Mock(side_effect=sqlite3.OperationalError("disk I/O error"))
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        client._migrate_history_schema()
 
 
 def test_sqlite_guarded_save_binds_complete_governance_identity():
@@ -899,19 +917,11 @@ def test_sqlite_guarded_save_binds_complete_governance_identity():
     assert params["governance_validated"] is False
 
 
-def test_mysql_connect_migrates_history_before_reporting_success(monkeypatch):
+def test_sqlite_connect_migrates_history_before_reporting_success():
     """A restarted process must migrate an existing history table before it can load it."""
-    from core.history import mysql_client as mysql_module
+    from core.history.sqlite_client import SQLiteClient
 
-    engine = MagicMock()
-    monkeypatch.setattr(mysql_module, "create_engine", Mock(return_value=engine))
-    client = mysql_module.MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
-    )
+    client = SQLiteClient(":memory:")
     events = []
     client._migrate_history_schema = lambda: events.append("migrated")
 
@@ -1053,30 +1063,6 @@ def test_sqlite_query_can_raise_for_business_layer():
     assert client.execute_query("SELECT 1") == []
     with pytest.raises(RuntimeError, match="query failed"):
         client.execute_query("SELECT 1", raise_on_error=True)
-
-
-def test_mysql_limited_query_streams_and_reports_truncation():
-    from core.history.mysql_client import MySQLClient
-
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
-    connection = Mock()
-    connection.execution_options.return_value = connection
-    result = Mock()
-    result.mappings.return_value.fetchmany.return_value = [
-        {"id": 1}, {"id": 2}, {"id": 3}
-    ]
-    connection.execute.return_value = result
-
-    @contextmanager
-    def connection_context():
-        yield connection
-
-    client.get_connection = connection_context
-    rows, truncated = client.execute_query_limited("SELECT id FROM users", max_rows=2)
-
-    assert rows == [{"id": 1}, {"id": 2}]
-    assert truncated is True
-    connection.execution_options.assert_called_once_with(stream_results=True)
 
 
 def test_disconnected_neo4j_falls_back_to_db_schema():

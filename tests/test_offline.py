@@ -196,7 +196,7 @@ if all_passed:
     print("\n下一步:")
     print("1. 安装依赖：pip install -r requirements.txt")
     print("2. 配置环境变量：cp env.example .env")
-    print("3. 初始化数据库：mysql -u root -p < schema.sql")
+    print("3. 初始化数据库：无需手工步骤（首次启动自动创建 SQLite 库并加载种子）")
     print("4. 启动应用：streamlit run app.py")
 else:
     print("❌ 部分测试失败，请检查上方错误信息")

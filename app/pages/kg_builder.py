@@ -10,7 +10,6 @@ import streamlit as st
 from pathlib import Path
 import sys
 import tempfile
-from urllib.parse import quote_plus
 
 # 添加项目路径
 project_root = Path(__file__).parent.parent.parent
@@ -223,54 +222,35 @@ def render_graph_builder():
     with tab2:
         st.markdown(icon_header("从活体数据库构建知识图谱", "database", level=3), unsafe_allow_html=True)
 
-        st.warning("""
-        **注意事项**
-        - SQLite（默认）：提供数据库文件路径，读取 sqlite_master/PRAGMA 抽取业务表（排除应用存储表）
-        - MySQL：提供连接信息，读取 INFORMATION_SCHEMA 获取元数据
+        st.info("""
+        **说明**
+        - 活体抽取仅支持 SQLite：提供数据库文件路径，读取 sqlite_master/PRAGMA 抽取业务表（排除应用存储表）
         - 其他方言可通过 DDL/JSON 文件导入
         """)
 
+        db_type = "sqlite"
         col1, col2 = st.columns(2)
         with col1:
-            db_type = st.selectbox("数据库类型", ["sqlite", "mysql"], index=0)
+            st.caption("数据库类型：SQLite（应用配置库）")
             schema_name = st.text_input("Schema/数据库名", value="")
         with col2:
-            if db_type == "sqlite":
-                db_file = st.text_input(
-                    "SQLite 文件路径", value=str(project_root / "data" / "text2sql.db")
-                )
-            else:
-                db_host = st.text_input("主机", value="localhost")
-                db_port = st.text_input("端口", value="3306")
-
-        if db_type == "mysql":
-            db_user = st.text_input("用户名", value="root")
-            db_password = st.text_input("密码", type="password", value="")
+            db_file = st.text_input(
+                "SQLite 文件路径", value=str(project_root / "data" / "text2sql.db")
+            )
 
         enable_ai_db = st.checkbox("启用 AI 增强", value=True, key="ai_db")
 
         if st.button("连接并构建", type="primary", use_container_width=True, key="build_db"):
             db_uri = None
-            if db_type == "sqlite":
-                raw_path = (db_file or "").strip()
-                if not raw_path:
-                    st.warning("请填写 SQLite 数据库文件路径")
-                else:
-                    # 相对路径按项目根解析；sqlite:/// + 绝对路径
-                    db_path = Path(raw_path).expanduser()
-                    if not db_path.is_absolute():
-                        db_path = project_root / db_path
-                    db_uri = f"sqlite:///{db_path}"
-            elif not db_host or not db_user:
-                st.warning("请填写完整的数据库连接信息")
+            raw_path = (db_file or "").strip()
+            if not raw_path:
+                st.warning("请填写 SQLite 数据库文件路径")
             else:
-                # 构建连接 URI（对用户名和密码进行 URL 编码，防止特殊字符破坏 URI 解析）
-                safe_user = quote_plus(db_user)
-                safe_password = quote_plus(db_password)
-                if db_type == "mysql":
-                    db_uri = f"mysql+mysqlconnector://{safe_user}:{safe_password}@{db_host}:{db_port}/{schema_name}"
-                else:
-                    db_uri = f"{db_type}://{safe_user}:{safe_password}@{db_host}:{db_port}/{schema_name}"
+                # 相对路径按项目根解析；sqlite:/// + 绝对路径
+                db_path = Path(raw_path).expanduser()
+                if not db_path.is_absolute():
+                    db_path = project_root / db_path
+                db_uri = f"sqlite:///{db_path}"
 
             if db_uri:
                 try:
@@ -405,7 +385,7 @@ def render_graph_builder():
 
         #### 数据来源
         1. **DDL 文件**: 上传包含 CREATE TABLE 语句的 SQL 文件
-        2. **活体数据库**: 直接连接 SQLite（默认）/MySQL 数据库
+        2. **活体数据库**: 直接读取 SQLite 数据库文件（活体抽取仅支持 SQLite）
 
         #### AI 增强功能
         - **业务标签**: LLM 自动分析表结构，生成 3-5 个业务标签

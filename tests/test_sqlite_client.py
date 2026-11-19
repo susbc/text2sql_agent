@@ -1,4 +1,4 @@
-"""SQLiteClient 单测：接口 parity、SQL 翻译、初始化/种子门控、超时看门狗、治理往返。
+"""SQLiteClient 单测：SQL 翻译、初始化/种子门控、超时看门狗、治理往返。
 
 fixture 策略（文档化）：使用真实种子（data/seed_business.sql + data/seed_history.sql）
 初始化的临时文件库。fresh 库基线＝历史 50 行（max id 79）+ 业务 30 行（8 表）。
@@ -6,14 +6,12 @@ fixture 策略（文档化）：使用真实种子（data/seed_business.sql + da
 """
 from __future__ import annotations
 
-import inspect
 import sqlite3
 
 import pytest
 
 import config
 from core.config_validation import RuntimeConfigurationError
-from core.history.mysql_client import MySQLClient
 from core.history.proof import (
     GovernedHistoryFinalization,
     GovernedHistorySave,
@@ -81,30 +79,7 @@ def _governed_save_command(session_id="gov-session"):
     )
 
 
-# ==================== 接口 parity ====================
-
-def test_public_method_signatures_match_mysql_client():
-    """每个 MySQLClient 公开方法在 SQLiteClient 上同名同签名（允许附加带默认值的 kw-only）。"""
-    for name, member in vars(MySQLClient).items():
-        if name.startswith("_") or not inspect.isfunction(member):
-            continue
-        assert hasattr(SQLiteClient, name), f"缺少公开方法：{name}"
-        mysql_sig = inspect.signature(member)
-        sqlite_sig = inspect.signature(getattr(SQLiteClient, name))
-        mysql_params = list(mysql_sig.parameters.values())[1:]  # 去 self
-        sqlite_params = list(sqlite_sig.parameters.values())[1:]
-        sqlite_by_name = {p.name: p for p in sqlite_params}
-        for param in mysql_params:
-            assert param.name in sqlite_by_name, f"{name} 缺少参数 {param.name}"
-            other = sqlite_by_name[param.name]
-            assert other.kind is param.kind, f"{name}.{param.name} 参数类别不一致"
-            assert other.default == param.default, f"{name}.{param.name} 默认值不一致"
-        extra = [p for p in sqlite_params if p.name not in {q.name for q in mysql_params}]
-        for param in extra:
-            assert param.kind is inspect.Parameter.KEYWORD_ONLY, f"{name} 附加参数须 kw-only"
-            assert param.default is not inspect.Parameter.empty, f"{name} 附加参数须有默认值"
-    assert SQLiteClient.explain_query_enforces_wall_clock_deadline is True
-
+# ==================== 基础属性 ====================
 
 def test_database_attribute_is_main(client):
     assert client.database == "main"
@@ -511,6 +486,7 @@ def test_get_statistics(client):
 
 
 def test_explain_query_returns_query_plan_rows(client):
+    assert SQLiteClient.explain_query_enforces_wall_clock_deadline is True
     plan = client.explain_query(
         "SELECT * FROM risk_blacklist WHERE risk_level = 3", timeout_ms=3000
     )
@@ -659,7 +635,7 @@ def test_governed_paths_fail_closed_without_verifier(client):
 
 
 def test_governed_save_rejects_invalid_identity(db_path):
-    """与 MySQLClient 一致：身份校验在 try 之外，非法身份显式抛 ValueError。"""
+    """与迁移前客户端一致：身份校验在 try 之外，非法身份显式抛 ValueError。"""
     issuer, verifier = create_history_proof_pair()
     instance = SQLiteClient(db_path, governance_proof_verifier=verifier)
     assert instance.connect() is True

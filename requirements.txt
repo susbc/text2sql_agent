@@ -1,8 +1,7 @@
 # Neo4j Graph Database
 neo4j==5.15.0
 
-# MySQL Database
-mysql-connector-python==8.2.0
+# SQLite Database（嵌入式单文件库，经 SQLAlchemy 访问；无需数据库服务）
 sqlalchemy==2.0.23
 
 # LangChain

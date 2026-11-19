@@ -1,5 +1,9 @@
 """MySQL → SQLite 一次性迁移：只读 introspect 源库，生成 SQLite 种子文件。
 
+历史工具（迁移已完成，种子已提交入库）：应用运行时不再依赖 MySQL；
+mysql-connector-python 已从 requirements.txt 移除，如需对源库重跑本脚本，
+须先手工安装该连接器（pip install mysql-connector-python==8.2.0）。
+
 用法（源 MySQL 需在运行，连接取自项目根 .env 的 MYSQL_*）：
     .venv/bin/python scripts/migrate_mysql_to_sqlite.py
 
@@ -47,7 +51,7 @@ SEED_BUSINESS_PATH = DATA_DIR / "seed_business.sql"
 SEED_HISTORY_PATH = DATA_DIR / "seed_history.sql"
 
 # 应用表固定输出顺序：sql_generation_history 必须先于 user_feedback（外键依赖），
-# 其余与 MySQLClient._MANAGEMENT_TABLE_DDL 顺序一致。Task 2 的内联 DDL 以
+# 其余与原 MySQL 客户端管理表 DDL 顺序一致。Task 2 的内联 DDL 以
 # data/seed_history.sql 为规范（canonical）镜像。
 APP_TABLE_ORDER = (
     "sql_generation_history",

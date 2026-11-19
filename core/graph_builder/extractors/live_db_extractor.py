@@ -4,7 +4,7 @@
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import make_url
 from loguru import logger
 
@@ -22,7 +22,7 @@ _APP_TABLES = frozenset({
 
 
 class LiveDBExtractor(BaseExtractor):
-    """活体数据库抽取器（支持 sqlite/mysql）"""
+    """活体数据库抽取器（SQLite-only；其他方言走离线 DDL/JSON 通道）"""
 
     def __init__(self, db_uri: str, db_type: str = "sqlite", schema: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
@@ -49,11 +49,10 @@ class LiveDBExtractor(BaseExtractor):
             self.engine = None
 
     def extract(self) -> SchemaExtractResult:
-        if self.db_type not in ("mysql", "sqlite"):
-            raise ValueError(f"活体数据库抽取暂不支持 {self.db_type}，当前支持 mysql/sqlite")
+        if self.db_type != "sqlite":
+            raise ValueError(f"活体数据库抽取暂不支持 {self.db_type}，当前仅支持 sqlite")
 
-        if self.db_type == "sqlite":
-            self._ensure_sqlite_file_exists()
+        self._ensure_sqlite_file_exists()
 
         if not self.engine and not self.connect():
             raise ConnectionError(f"无法连接到 {self.db_type} 数据库")
@@ -61,17 +60,11 @@ class LiveDBExtractor(BaseExtractor):
         result = SchemaExtractResult()
         result.metadata["source_type"] = "live_db"
 
-        # SQLite 单文件库的 schema 恒为 main（与 SQLiteClient.database 一致）；
-        # MySQL 保持原有 default 占位（实际 schema 由 _extract_mysql 解析）。
-        default_name = "main" if self.db_type == "sqlite" else "default"
-        db = DatabaseIR(name=self.schema or default_name, db_type=self.db_type)
+        # SQLite 单文件库的 schema 恒为 main（与 SQLiteClient.database 一致）。
+        db = DatabaseIR(name=self.schema or "main", db_type=self.db_type)
         result.databases.append(db)
 
-        if self.db_type == "sqlite":
-            self._extract_sqlite(result)
-        else:
-            self._extract_mysql(result)
-            result.relationships = self._infer_relationships_from_schema(result)
+        self._extract_sqlite(result)
         return result
 
     def _ensure_sqlite_file_exists(self):
@@ -149,38 +142,3 @@ class LiveDBExtractor(BaseExtractor):
                         join_type="LEFT JOIN",
                     ))
         return relationships
-
-    def _extract_mysql(self, result: SchemaExtractResult):
-        with self.engine.connect() as conn:
-            schema_name = self.schema
-            if not schema_name:
-                schema_name = conn.execute(text("SELECT DATABASE()")).scalar()
-            if not schema_name:
-                raise ValueError("未指定 MySQL schema，且连接未选择默认数据库")
-
-            tables = conn.execute(text("""
-                SELECT TABLE_NAME, TABLE_COMMENT, TABLE_SCHEMA
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = :schema_name
-            """), {"schema_name": schema_name}).fetchall()
-
-            for row in tables:
-                table = TableIR(name=row[0], database=row[2], description=row[1])
-                result.tables.append(table)
-
-            columns = conn.execute(text("""
-                SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_COMMENT, IS_NULLABLE, COLUMN_KEY, TABLE_NAME
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = :schema_name
-                ORDER BY TABLE_NAME, ORDINAL_POSITION
-            """), {"schema_name": schema_name}).fetchall()
-
-            for row in columns:
-                table = next((t for t in result.tables if t.name == row[5]), None)
-                if table:
-                    column = ColumnIR(
-                        name=row[0], data_type=row[1].split('(')[0],
-                        description=row[2], is_nullable=row[3] == 'YES',
-                        is_primary_key=row[4] == 'PRI'
-                    )
-                    table.columns.append(column)

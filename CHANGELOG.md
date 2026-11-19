@@ -5,6 +5,72 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased] - 2026-11-20（MySQL → SQLite 存储迁移）
+
+### Changed
+
+- **存储后端 MySQL → SQLite**：`core/history/sqlite_client.py` `SQLiteClient` 成为唯一
+  应用存储客户端（`ApplicationContext.db_client`）；单文件嵌入式库 `data/text2sql.db`
+  （`SQLITE_PATH` 可配），6 应用表与 8 业务表同库。首次连接幂等建表 + 治理列迁移 +
+  原子种子加载（历史 50 行 / 业务 30 行；`PRAGMA user_version` 完成门防已初始化库重放）。
+  文件库 NullPool、`:memory:` StaticPool + per-client RLock；每连接 `PRAGMA foreign_keys=ON`。
+- **默认方言 mysql → sqlite**：`SQL_DIALECT` 默认 sqlite；生成方言仍由 Neo4j
+  `Database.db_type` 驱动（多 dialect 生成保留），执行目标为 SQLite 业务库。
+- **超时机制**：SQLite 无 `MAX_EXECUTION_TIME` hint；`execute_query_limited` 改用
+  `threading.Timer` + `Connection.interrupt` 看门狗（保留 `SQL_QUERY_TIMEOUT_MS` 预算，
+  仅精确匹配 `interrupted` 才转超时异常）。
+- **安全边界**：`get_table_schema`/`get_column_schema` 仅返回业务表
+  （sqlite_master/PRAGMA，大小写归一）；6 应用表全部进入 `SQL_BLOCKED_TABLES` 黑名单，
+  无条件生效（独立于 `SQL_SCOPE_ENFORCEMENT` 开关）。
+- **few-shot 按方言过滤**：按当前生成方言筛选历史示例；新行 `sql_dialect` 默认 sqlite，
+  迁移保留的 50 行 mysql 旧历史不注入 SQLite 提示。
+- **KG 活体抽取改 SQLite**：`live_db_extractor` 仅支持 sqlite（原生反射，排除 6 应用表，
+  声明外键优先于启发式推断）；kg_builder 活体构建页改填 SQLite 文件路径；
+  Neo4j `Database` 节点 `db_type` 更新为 sqlite（如实反映配置库）。
+- **UI 文案**：侧栏/系统信息存储状态与统计 MySQL→SQLite（文件路径/表数/历史数）；
+  治理面板注明语义治理仅支持 MySQL（SQLite 模式不可用）。
+- **配置/artifacts/文档同步**：config `MYSQL_*`→`SQLITE_PATH`；`env.example`、
+  `schema.sql`（镜像 seed_history.sql 的 SQLite DDL）、`requirements.txt`、
+  README 架构/环境/存储/测试章节基于实际代码更新。
+- 治理（语义治理 + EXPLAIN 预检）保持 **mysql-only 休眠**：内核与闸门未扩展，
+  SQLite 模式下不可启用；治理路径测试显式使用 mysql dialect。
+
+### Removed
+
+- `core/history/mysql_client.py`（`MySQLClient`）与 `mysql-connector-python` 依赖
+  （SQLAlchemy 保留，SQLite 经其访问）；KG 活体抽取的 MySQL 分支
+  （`mysql+mysqlconnector` URI / INFORMATION_SCHEMA 查询）。
+- MySQL 专属测试（SQLite 侧覆盖已在 `test_sqlite_client.py` 等存在）：
+  `test_regressions.py` 的 `stream_results` 流式截断测试；`tests/sql/test_preflight.py`
+  的 4 个 `MySQLClient` EXPLAIN 适配器测试（hinted EXPLAIN / timeout 校验 /
+  非 SELECT 拒绝 / 连接 invalidate）；`test_sqlite_client.py` 的签名 parity 测试
+  （parity 使命随 MySQLClient 移除结束；墙钟 deadline 属性断言保留并入 explain 测试）；
+  `test_graph_builder.py` 的 MySQL 活体抽取路径测试（活体抽取已 SQLite-only，
+  不支持方言拒绝测试扩展覆盖 mysql）。
+  另 3 个 `test_regressions.py` MySQL 内部测试**适配**为 SQLiteClient（迁移幂等 /
+  并发重复容忍 / connect 迁移时序），断言语义不变。
+
+### Added
+
+- `scripts/migrate_mysql_to_sqlite.py` 一次性迁移脚本（源 MySQL 只读 introspect →
+  种子，逐表行数对账；历史工具，重跑需手工安装 mysql-connector-python）与
+  `data/seed_business.sql` / `data/seed_history.sql` 部署种子。
+- `tests/test_sqlite_client.py`（DDL/种子门控/schema 迁移/看门狗/治理往返）、
+  `tests/test_migration_reconciliation.py`（迁移对账）、
+  `tests/test_sqlite_execution_security.py`（应用表禁查边界）、
+  `tests/test_few_shot_dialect_filter.py`（方言过滤）。
+
+### Verified
+
+- 全量回归：`1067 passed, 9 skipped, 0 failed`
+  （`.venv/bin/python -m pytest tests -q`，Python 3.12.10；基线 1074 passed / 9 skipped，
+  差值 7 = 上述移除的 MySQL 专属测试数）。
+- `.venv/bin/python -m ruff check .` 零告警（ruff 0.15.20）。
+- 依赖核查：mysql import 阻断器下 `core.app_context` / `core.graph_builder.main` /
+  `app.pages.kg_builder` 导入全部通过；代码零活
+  `mysql_client`/`MySQLClient`/`mysql+mysqlconnector`/`MYSQL_` 引用
+  （治理内核方言字符串、历史 CHANGELOG/文档、一次性迁移脚本除外）。
+
 ## [Unreleased] - 2026-11-19
 
 ### Removed

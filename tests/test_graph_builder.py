@@ -6,7 +6,6 @@ import os
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -434,62 +433,14 @@ def test_live_extract_sqlite_missing_file(tmp_path):
 
 
 def test_live_extract_unsupported_db_type():
-    """mysql/sqlite 之外的方言仍拒绝（离线 DDL/JSON 通道不变）。"""
+    """sqlite 之外的方言一律拒绝（含 mysql——活体抽取已 SQLite-only；离线 DDL/JSON 通道不变）。"""
     extractor = LiveDBExtractor(db_uri="oracle://unused", db_type="oracle")
     with pytest.raises(ValueError, match="暂不支持"):
         extractor.extract()
 
-
-def test_live_extract_mysql_path_intact():
-    """MySQL 活体抽取路径保持可用（Task 8 前不移除）：mock INFORMATION_SCHEMA。"""
-    table_rows = [
-        ("users", "用户表", "business_db"),
-        ("risk_blacklist", "黑名单", "business_db"),
-    ]
-    column_rows = [
-        ("user_id", "bigint(20)", "用户ID", "NO", "PRI", "users"),
-        ("name", "varchar(64)", "姓名", "YES", "", "users"),
-        ("id", "bigint(20)", "", "NO", "PRI", "risk_blacklist"),
-        ("user_id", "bigint(20)", "用户ID", "YES", "", "risk_blacklist"),
-    ]
-
-    def fake_execute(stmt, params=None):
-        sql = str(stmt)
-        result = MagicMock()
-        if "SELECT DATABASE()" in sql:
-            result.scalar.return_value = "business_db"
-        elif "INFORMATION_SCHEMA.TABLES" in sql:
-            result.fetchall.return_value = table_rows
-        elif "INFORMATION_SCHEMA.COLUMNS" in sql:
-            result.fetchall.return_value = column_rows
-        return result
-
-    conn = MagicMock()
-    conn.execute.side_effect = fake_execute
-    engine = MagicMock()
-    engine.connect.return_value.__enter__.return_value = conn
-
-    extractor = LiveDBExtractor(
-        db_uri="mysql+mysqlconnector://user:pass@localhost:3306/business_db",
-        db_type="mysql",
-    )
-    extractor.engine = engine  # 跳过真实连接
-    result = extractor.extract()
-
-    assert result.databases[0].db_type == "mysql"
-    assert {t.name for t in result.tables} == {"users", "risk_blacklist"}
-    users = next(t for t in result.tables if t.name == "users")
-    cols = {c.name: c for c in users.columns}
-    assert cols["user_id"].data_type == "bigint"
-    assert cols["user_id"].is_primary_key is True
-    assert cols["user_id"].is_nullable is False
-    assert cols["name"].is_nullable is True
-    assert users.description == "用户表"
-    # 启发式关系：risk_blacklist.user_id → users
-    assert any(
-        (r.from_table, r.from_column, r.to_table) == ("risk_blacklist", "user_id", "users")
-        for r in result.relationships
-    )
+    mysql_extractor = LiveDBExtractor(db_uri="mysql://unused", db_type="mysql")
+    with pytest.raises(ValueError, match="暂不支持"):
+        mysql_extractor.extract()
 
 
 def test_extract_from_db_default_sqlite(tmp_path):

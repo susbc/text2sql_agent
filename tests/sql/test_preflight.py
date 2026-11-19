@@ -19,44 +19,6 @@ def capture_loguru(caplog):
         logger.remove(sink_id)
 
 
-def test_mysql_explain_emits_hinted_select_without_session_mutation_or_limit():
-    """Catches a preflight adapter that changes pooled state or inspected query scope."""
-    from core.history.mysql_client import MySQLClient
-
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
-    executed_sql = []
-
-    class ResultRow:
-        _mapping = {"rows": 7}
-
-    class Connection:
-        def execute(self, statement):
-            executed_sql.append(str(statement))
-            return [ResultRow()]
-
-        def close(self):
-            return None
-
-    engine = Mock()
-    engine.connect.return_value = Connection()
-    client.engine = engine
-
-    assert client.explain_query("SELECT id FROM users", timeout_ms=3000) == [{"rows": 7}]
-    assert executed_sql == ["EXPLAIN SELECT /*+ MAX_EXECUTION_TIME(3000) */ id FROM users"]
-    assert "SET SESSION" not in executed_sql[0]
-    assert "LIMIT" not in executed_sql[0]
-
-
-def test_mysql_explain_rejects_non_positive_timeout_before_database_execution():
-    """Catches a preflight adapter that sends unbounded EXPLAIN work to MySQL."""
-    from core.history.mysql_client import MySQLClient
-
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
-
-    with pytest.raises(ValueError, match="timeout_ms 必须大于 0"):
-        client.explain_query("SELECT 1", timeout_ms=0)
-
-
 def test_preflight_constructor_rejects_invalid_limits_before_any_check():
     """Catches invalid startup/reload limits being normalized into EXPLAIN_FAILED."""
     from core.sql.preflight import MySQLExplainPreflight
@@ -85,16 +47,6 @@ def test_preflight_constructor_requires_strict_integer_limits(
             timeout_ms=timeout_ms,
             max_estimated_rows=max_estimated_rows,
         )
-
-
-def test_mysql_explain_rejects_non_select_before_database_execution():
-    """Catches a preflight adapter that lets writes reach EXPLAIN."""
-    from core.history.mysql_client import MySQLClient
-
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
-
-    with pytest.raises(ValueError, match="仅支持 SELECT 预检"):
-        client.explain_query("UPDATE users SET active = 1", timeout_ms=3000)
 
 
 def test_preflight_rejects_empty_plan():
@@ -216,52 +168,6 @@ def test_preflight_one_millisecond_deadline_does_not_wait_for_blocking_fake():
     assert result.valid is False
     assert result.issues[0].code == "EXPLAIN_FAILED"
     assert released.wait(0.5), "the late worker must finish and release its resources"
-
-
-def test_mysql_explain_timeout_invalidates_connection_without_commit():
-    from core.history.mysql_client import MySQLClient
-
-    released = threading.Event()
-
-    class ResultRow:
-        _mapping = {"rows": 1}
-
-    class Connection:
-        def __init__(self):
-            self.invalidations = 0
-            self.closes = 0
-            self.commits = 0
-
-        def execute(self, _statement):
-            time.sleep(0.12)
-            return [ResultRow()]
-
-        def invalidate(self):
-            self.invalidations += 1
-
-        def close(self):
-            self.closes += 1
-            released.set()
-
-        def commit(self):
-            self.commits += 1
-
-    connection = Connection()
-    engine = Mock()
-    engine.connect.return_value = connection
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
-    client.engine = engine
-
-    started = time.monotonic()
-    with pytest.raises(TimeoutError, match="EXPLAIN deadline exceeded"):
-        client.explain_query("SELECT 1", timeout_ms=1)
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 0.05
-    assert released.wait(0.5)
-    assert connection.invalidations >= 1
-    assert connection.closes == 1
-    assert connection.commits == 0
 
 
 def test_repeated_blocking_preflights_use_a_bounded_worker_set():
