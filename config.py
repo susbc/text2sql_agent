@@ -25,17 +25,9 @@ load_dotenv()
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent
 
-# ==================== MySQL 配置 ====================
-MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
-MYSQL_PORT = parse_env_int("MYSQL_PORT", 3306)
-MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "root")
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "text2sql_db")
-
-# MySQL 连接池配置
-MYSQL_POOL_SIZE = parse_env_int("MYSQL_POOL_SIZE", 10)  # 连接池大小
-MYSQL_MAX_OVERFLOW = parse_env_int("MYSQL_MAX_OVERFLOW", 20)  # 最大溢出连接数
-MYSQL_POOL_TIMEOUT = parse_env_int("MYSQL_POOL_TIMEOUT", 30)  # 获取连接超时时间（秒）
+# ==================== SQLite 配置 ====================
+# 单文件库；":memory:" 亦受支持（测试/临时场景）。
+SQLITE_PATH = os.getenv("SQLITE_PATH", str(PROJECT_ROOT / "data" / "text2sql.db"))
 
 # ==================== Neo4j 配置 ====================
 NEO4J_ENABLED = parse_env_bool("NEO4J_ENABLED", False)
@@ -95,7 +87,7 @@ FEW_SHOT_MIN_SIMILARITY = parse_env_float("FEW_SHOT_MIN_SIMILARITY", 0.5)  # 最
 
 # ==================== SQL 配置 ====================
 # SQLFluff 配置
-SQL_DIALECT = os.getenv("SQL_DIALECT", "mysql")
+SQL_DIALECT = os.getenv("SQL_DIALECT", "sqlite")
 SQL_MAX_LENGTH = parse_env_int("SQL_MAX_LENGTH", 2000)
 SQL_VALIDATION_ENABLED = parse_env_bool("SQL_VALIDATION_ENABLED", True)
 SQL_QUERY_MAX_ROWS = parse_env_int("SQL_QUERY_MAX_ROWS", 500)
@@ -166,10 +158,7 @@ def validate_config():
             "llm_api_key": LLM_API_KEY,
             "embedding_provider": EMBEDDING_PROVIDER,
             "embedding_api_key": EMBEDDING_API_KEY,
-            "mysql_port": MYSQL_PORT,
-            "mysql_pool_size": MYSQL_POOL_SIZE,
-            "mysql_max_overflow": MYSQL_MAX_OVERFLOW,
-            "mysql_pool_timeout": MYSQL_POOL_TIMEOUT,
+            "sqlite_path": SQLITE_PATH,
             "neo4j_max_pool_size": NEO4J_MAX_POOL_SIZE,
             "neo4j_connection_timeout": NEO4J_CONNECTION_TIMEOUT,
             "prompt_max_length": PROMPT_MAX_LENGTH,

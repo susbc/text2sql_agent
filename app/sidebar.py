@@ -216,7 +216,7 @@ def render_sidebar() -> None:
                     st.caption("元数据模式")
             with col2:
                 st.markdown(icon_line("MySQL", "database"), unsafe_allow_html=True)
-                st.caption("已连接" if ctx.mysql_client else "未连接")
+                st.caption("已连接" if ctx.db_client else "未连接")
 
             st.markdown(icon_line("Embedding", "plug"), unsafe_allow_html=True)
             st.caption(f"{EMBEDDING_PROVIDER}/{EMBEDDING_MODEL}")

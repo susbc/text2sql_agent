@@ -28,6 +28,9 @@ python_deps/*
 logs/*.log
 logs/*.log.*
 data/index_cache/
+data/*.db
+data/*.db-wal
+data/*.db-shm
 semantic_models/.compiled/
 eval/results/
 eval/reports/

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from math import isfinite
+from pathlib import Path
 from typing import Any
 
 from core.provider_catalog import (
@@ -28,10 +29,6 @@ def _is_strict_int(value: Any) -> bool:
 
 
 _INTEGER_CONFIG_LIMITS = {
-    "mysql_port": ("MYSQL_PORT", 1, 65_535),
-    "mysql_pool_size": ("MYSQL_POOL_SIZE", 1, 1_000),
-    "mysql_max_overflow": ("MYSQL_MAX_OVERFLOW", 0, 1_000),
-    "mysql_pool_timeout": ("MYSQL_POOL_TIMEOUT", 1, 3_600),
     "neo4j_max_pool_size": ("NEO4J_MAX_POOL_SIZE", 1, 1_000),
     "neo4j_connection_timeout": ("NEO4J_CONNECTION_TIMEOUT", 1, 3_600),
     "prompt_max_length": ("PROMPT_MAX_LENGTH", 1_000, 100_000),
@@ -199,6 +196,26 @@ _PROVIDER_CREDENTIAL_RULES = (
 )
 
 
+def _validate_sqlite_path(value: Any) -> None:
+    """SQLite 路径必须是非空字符串；文件库要求最近现存祖先目录可写。
+
+    ":memory:" 是合法的内存库路径，跳过可写性探测。错误消息只含键名，
+    不回显任何路径取值（RuntimeConfigurationError 约定）。
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeConfigurationError("SQLITE_PATH 必须是非空字符串路径")
+    if value.strip() == ":memory:":
+        return
+    anchor = Path(value).expanduser().absolute().parent
+    while not anchor.exists():
+        parent = anchor.parent
+        if parent == anchor:
+            break
+        anchor = parent
+    if not os.access(anchor, os.W_OK):
+        raise RuntimeConfigurationError("SQLITE_PATH 所在目录必须可写")
+
+
 def _validate_provider_credentials(config: Mapping[str, Any]) -> None:
     """要求需要密钥的已知提供商必须同时给出非空密钥。
 
@@ -256,6 +273,9 @@ def validate_runtime_config(config: Mapping[str, Any]) -> None:
             raise RuntimeConfigurationError(
                 "SQL_REPAIR_MAX_ATTEMPTS 必须是 0 或 1 的整数"
             )
+
+    if "sqlite_path" in config:
+        _validate_sqlite_path(config["sqlite_path"])
 
     _validate_provider_credentials(config)
 

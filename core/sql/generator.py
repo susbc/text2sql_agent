@@ -19,7 +19,7 @@ from loguru import logger
 from ..chain.sql_chain import QueryRewriteChain, SQLGenerationChain
 from ..config_validation import RuntimeConfigurationError, validate_history_max_records
 from ..history.identity import GovernedHistoryIdentity
-from ..history.mysql_client import MySQLClient
+from ..history.sqlite_client import SQLiteClient
 from ..history.proof import (
     GovernedHistoryFinalization,
     GovernedHistorySave,
@@ -56,7 +56,7 @@ class SQLGenerator:
 
     def __init__(self, llm, knowledge_retriever: KnowledgeRetriever,
                  sql_chain: SQLGenerationChain,
-                 mysql_client: Optional[MySQLClient] = None,
+                 db_client: Optional[SQLiteClient] = None,
                  config: Optional[Dict] = None,
                  neo4j_client=None,
                  correctness_pipeline=None,
@@ -64,7 +64,7 @@ class SQLGenerator:
         self.llm = llm
         self.knowledge_retriever = knowledge_retriever
         self.sql_chain = sql_chain
-        self.mysql_client = mysql_client
+        self.db_client = db_client
         self.config = config or {}
         self.neo4j_client = neo4j_client
         self.correctness_pipeline = correctness_pipeline
@@ -171,7 +171,7 @@ class SQLGenerator:
         governance_identity: GovernedHistoryIdentity | None = None,
     ):
         """保存待执行历史；仅执行成功的记录才会进入 Few-Shot。"""
-        if not self.mysql_client or not result.get('sql'):
+        if not self.db_client or not result.get('sql'):
             return
         validation = result.get('validation')
         if validation:
@@ -189,7 +189,7 @@ class SQLGenerator:
             validation_status = 'pending'
             validation_error = result.get('error')
         if governance_identity is None:
-            history_id = self.mysql_client.save_sql_history(
+            history_id = self.db_client.save_sql_history(
                 user_query=user_query,
                 generated_sql=result['sql'],
                 session_id=session_id,
@@ -220,7 +220,7 @@ class SQLGenerator:
                 semantic_content_sha256=governance_identity.content_sha256,
             )
             proof = self._history_proof_issuer.issue(command)
-            history_id = self.mysql_client.save_governed_sql_history(command, proof)
+            history_id = self.db_client.save_governed_sql_history(command, proof)
         else:
             logger.warning("governed_history_save_rejected reason=missing_proof_issuer")
             history_id = None
@@ -370,7 +370,7 @@ class SQLGenerator:
                 governance_identity=governance_identity,
             )
             return
-        history = self.mysql_client.get_history_detail(history_id)
+        history = self.db_client.get_history_detail(history_id)
         if (
             isinstance(history, Mapping)
             and history.get('session_id') == expected_history.get('session_id')
@@ -403,7 +403,7 @@ class SQLGenerator:
         """Resolve a history row only when all execution identity fields match."""
         if not session_id:
             return None, None, '执行历史与当前会话或 SQL 不匹配'
-        history = self.mysql_client.get_history_detail(history_id)
+        history = self.db_client.get_history_detail(history_id)
         if not isinstance(history, Mapping):
             return None, None, '执行历史与当前会话或 SQL 不匹配'
         if history.get('session_id') != session_id:
@@ -503,8 +503,8 @@ class SQLGenerator:
                 semantic_content_sha256=history['semantic_content_sha256'],
             )
             proof = self._history_proof_issuer.issue(command)
-            return self.mysql_client.finalize_governed_sql_execution(command, proof)
-        return self.mysql_client.update_sql_execution(
+            return self.db_client.finalize_governed_sql_execution(command, proof)
+        return self.db_client.update_sql_execution(
             history_id=history_id,
             execution_status=execution_status,
             execution_error=execution_error,
@@ -560,7 +560,7 @@ class SQLGenerator:
             for table in ctx['schema_info'].get('tables', [])
         }
         result['allowed_tables'] = sorted(name for name in tables if name)
-        database = getattr(self.mysql_client, 'database', None) if self.mysql_client else None
+        database = getattr(self.db_client, 'database', None) if self.db_client else None
         result['allowed_schemas'] = [database] if database else []
         result['target_database_id'] = ctx.get('detected_database_id')
 
@@ -982,8 +982,8 @@ class SQLGenerator:
         """获取 Schema 信息"""
         if self.neo4j_client and getattr(self.neo4j_client, 'driver', None):
             return self._get_schema_from_neo4j(database_id)
-        if self.mysql_client:
-            return self._get_schema_from_mysql(database_id)
+        if self.db_client:
+            return self._get_schema_from_db(database_id)
         return {'tables': [], 'columns': [], 'relationships': []}
 
     def _get_schema_from_neo4j(self, database_id: Optional[int] = None) -> Dict:
@@ -1066,15 +1066,15 @@ class SQLGenerator:
                 'relationships': rel_result or []
             }
         except Exception as e:
-            logger.warning(f"从 Neo4j 获取 Schema 失败：{e}，回退到 MySQL")
-            return self._get_schema_from_mysql(database_id)
+            logger.warning(f"从 Neo4j 获取 Schema 失败：{e}，回退到 SQLite")
+            return self._get_schema_from_db(database_id)
 
-    def _get_schema_from_mysql(self, database_id: Optional[int] = None) -> Dict:
-        """从 MySQL 获取 Schema 信息"""
-        if not self.mysql_client:
+    def _get_schema_from_db(self, database_id: Optional[int] = None) -> Dict:
+        """从 SQLite 获取 Schema 信息"""
+        if not self.db_client:
             return {'tables': [], 'columns': [], 'relationships': []}
 
-        tables = self.mysql_client.get_table_schema()
+        tables = self.db_client.get_table_schema()
         if database_id is not None and self.neo4j_client:
             try:
                 result = self.neo4j_client.execute_query("""
@@ -1088,7 +1088,7 @@ class SQLGenerator:
 
         all_columns = []
         for table in tables:
-            columns = self.mysql_client.get_column_schema(table['table_name'])
+            columns = self.db_client.get_column_schema(table['table_name'])
             all_columns.extend(columns)
 
         return {'tables': tables, 'columns': all_columns, 'relationships': []}
@@ -1153,7 +1153,7 @@ class SQLGenerator:
         else:
             governance_identity = None
 
-        if not self.mysql_client:
+        if not self.db_client:
             return {'status': 'error', 'error': 'MySQL 客户端未连接', 'data': None}
 
         history: Mapping[str, Any] | None = None
@@ -1199,7 +1199,7 @@ class SQLGenerator:
                 timeout_ms=int(self.config.get('sql_query_timeout_ms', 10000)),
                 dialect=self.sql_chain.dialect,
             )
-            results, truncated = self.mysql_client.execute_query_limited(
+            results, truncated = self.db_client.execute_query_limited(
                 constrained_sql, max_rows=max_rows
             )
 
@@ -1257,12 +1257,12 @@ class SQLGenerator:
         if not self.config.get('sql_scope_enforcement', True):
             return None
         if allowed_tables is None:
-            schema_rows = self.mysql_client.get_table_schema()
+            schema_rows = self.db_client.get_table_schema()
             allowed_tables = [
                 row.get('table_name') for row in schema_rows if row.get('table_name')
             ]
         if allowed_schemas is None:
-            database = getattr(self.mysql_client, 'database', None)
+            database = getattr(self.db_client, 'database', None)
             allowed_schemas = [database] if database else []
         scope = validate_query_scope(
             sql,
@@ -1281,9 +1281,9 @@ class SQLGenerator:
                 'error': '语义治理模式下请重新生成 SQL',
                 'data': None,
             }
-        if not self.mysql_client:
+        if not self.db_client:
             return {'status': 'error', 'error': 'MySQL 客户端未连接'}
-        history = self.mysql_client.get_history_detail(history_id)
+        history = self.db_client.get_history_detail(history_id)
         if not history:
             return {'status': 'error', 'error': '历史记录不存在'}
 
@@ -1294,7 +1294,7 @@ class SQLGenerator:
         if fix_result['status'] != 'success':
             return fix_result
 
-        self.mysql_client.execute_update(
+        self.db_client.execute_update(
             """UPDATE sql_generation_history
                SET generated_sql = :generated_sql, validation_status = 'pending'
                WHERE id = :history_id""",
@@ -1311,8 +1311,8 @@ class SQLGenerator:
                 'document_count': self.knowledge_retriever.retriever.get_document_count()
             }
         }
-        if self.mysql_client:
-            stats['history_stats'] = self.mysql_client.get_statistics()
+        if self.db_client:
+            stats['history_stats'] = self.db_client.get_statistics()
         return stats
 
     def detect_dialect(self, user_query: str) -> Tuple[str, Optional[int]]:
@@ -1325,7 +1325,7 @@ class SQLGenerator:
 def create_sql_generator(
     llm,
     neo4j_client,
-    mysql_client,
+    db_client,
     config: Optional[Dict] = None,
     embedding_factory: Optional = None,
     correctness_pipeline=None,
@@ -1366,7 +1366,7 @@ def create_sql_generator(
         llm=llm,
         knowledge_retriever=knowledge_retriever,
         sql_chain=sql_chain,
-        mysql_client=mysql_client,
+        db_client=db_client,
         config=config,
         correctness_pipeline=correctness_pipeline,
         history_proof_issuer=history_proof_issuer,
@@ -1377,13 +1377,13 @@ def create_sql_generator(
         knowledge_retriever.retriever.index_documents(documents, metadata)
 
     # 6. 构建 Few-Shot 索引
-    if mysql_client and config.get('few_shot_enabled', True):
+    if db_client and config.get('few_shot_enabled', True):
         try:
             if correctness_pipeline is not None:
                 history_records = []
                 knowledge_retriever.build_few_shot_index([])
             else:
-                history_records = mysql_client.get_successful_history_for_few_shot(
+                history_records = db_client.get_successful_history_for_few_shot(
                     limit=100,
                 )
                 knowledge_retriever.build_few_shot_index(history_records)

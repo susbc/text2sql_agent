@@ -10,12 +10,10 @@ from pathlib import Path
 from config import (
     LLM_MODEL,
     LLM_PROVIDER,
-    MYSQL_DATABASE,
-    MYSQL_HOST,
-    MYSQL_PORT,
     NEO4J_URI,
     RETRIEVAL_TOP_K,
     SQL_DIALECT,
+    SQLITE_PATH,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +24,7 @@ print("=" * 50)
 
 # ==================== 测试配置模块 ====================
 print("\n[1] 测试配置模块...")
-print(f"  ✓ MySQL: {MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}")
+print(f"  ✓ SQLite: {SQLITE_PATH}")
 print(f"  ✓ Neo4j: {NEO4J_URI}")
 print(f"  ✓ LLM: {LLM_PROVIDER}/{LLM_MODEL}")
 print(f"  ✓ Retrieval Top-K: {RETRIEVAL_TOP_K}")
@@ -140,7 +138,7 @@ required_files = [
     'core/chain/sql_chain.py',
     'core/sql/generator.py',
     'core/sql/validator.py',
-    'core/history/mysql_client.py',
+    'core/history/sqlite_client.py',
     'core/llm_factory.py',
     'app/__init__.py',
     'tests/test_core.py'
@@ -167,7 +165,7 @@ files_to_check = [
     'config.py',
     'core/llm_factory.py',
     'core/knowledge/neo4j_client.py',
-    'core/history/mysql_client.py',
+    'core/history/sqlite_client.py',
     'core/retrieval/bm25_tfidf.py',
     'core/chain/prompts.py',
     'core/chain/sql_chain.py',

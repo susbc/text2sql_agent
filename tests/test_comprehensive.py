@@ -3,6 +3,8 @@ Text2SQL 智能体 - 综合功能测试套件
 覆盖全部核心功能的 30+ 测试用例
 """
 import os
+import shutil
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -68,25 +70,25 @@ class TestConfig:
     
     def test_01_config_import(self):
         """测试 1: 配置文件导入"""
-        from config import MYSQL_HOST, MYSQL_USER, NEO4J_USER
-        assert MYSQL_HOST is not None
-        assert MYSQL_USER == 'root'
+        from config import NEO4J_USER, SQLITE_PATH
+        assert SQLITE_PATH is not None
+        assert isinstance(SQLITE_PATH, str) and SQLITE_PATH.strip()
         assert NEO4J_USER == 'neo4j'
-        
+
     def test_02_config_values(self):
-        """测试 2: 配置值验证"""
+        """测试 2: 配置值验证（存储配置反映环境覆盖 + 文档化默认值）"""
         from config import (
-            MYSQL_DATABASE,
-            MYSQL_PORT,
             NEO4J_URI,
             RETRIEVAL_TOP_K,
             SQL_DIALECT,
+            SQLITE_PATH,
         )
-        assert MYSQL_PORT == 3306
-        assert MYSQL_DATABASE == 'business_db'
+        assert SQLITE_PATH == os.getenv(
+            "SQLITE_PATH", str(PROJECT_ROOT / "data" / "text2sql.db")
+        )
         assert 'bolt://' in NEO4J_URI
         assert RETRIEVAL_TOP_K == 5
-        assert SQL_DIALECT == 'mysql'
+        assert SQL_DIALECT == os.getenv("SQL_DIALECT", "sqlite")
 
 
 # ==================== 文本检索模块测试 ====================
@@ -222,16 +224,18 @@ class TestSQLGenerator:
         pytest.skip("LangChain 兼容性问题")
 
 
-# ==================== MySQL 客户端测试 ====================
+# ==================== SQLite 客户端测试 ====================
 
-class TestMySQLClient:
-    """MySQL 客户端测试"""
+class TestSQLiteClient:
+    """SQLite 客户端测试（临时文件库，无需外部数据库服务）"""
 
     def setup_method(self):
-        if os.getenv("TEXT2SQL_RUN_DB_TESTS") != "1":
-            pytest.skip("设置 TEXT2SQL_RUN_DB_TESTS=1 后运行真实 MySQL 集成测试")
-        # 播种夹具元数据：table_schema/column_schema 由知识库同步流程填充，
-        # 独立运行本测试文件时可能为空，这里自带最小数据集并在 teardown 清理
+        # 迁移后存储为 SQLite 单文件库：connect() 幂等建表 + 种子，
+        # 不再依赖 MySQL 服务，原 TEXT2SQL_RUN_DB_TESTS 闸门随之移除。
+        self._tmpdir = tempfile.mkdtemp(prefix="text2sql_test_")
+        self._db_path = os.path.join(self._tmpdir, "test.db")
+        # 播种夹具元数据：table_schema/column_schema 注册表行（get_statistics
+        # 按其计数）；业务表结构来自种子。teardown 整体丢弃临时目录。
         self._seeded_tables = []
         client = self._make_client()
         client.connect()
@@ -246,7 +250,7 @@ class TestMySQLClient:
                     "SELECT id FROM table_schema WHERE table_name = :t",
                     {'t': table_name})
                 if exists:
-                    continue  # 已有真实数据，不覆盖、也不清理
+                    continue  # 已有数据，不覆盖
                 client.upsert_table_schema(table_name, '集成测试夹具表')
                 for col in columns:
                     client.upsert_column_schema(table_name, col, 'VARCHAR')
@@ -255,44 +259,21 @@ class TestMySQLClient:
             client.close()
 
     def teardown_method(self):
-        # 只清理本测试播种的夹具行，保持业务库干净
-        seeded = getattr(self, '_seeded_tables', None)
-        if not seeded:
-            return
-        client = self._make_client()
-        client.connect()
-        try:
-            for table_name in seeded:
-                rows = client.execute_query(
-                    "SELECT id FROM table_schema WHERE table_name = :t",
-                    {'t': table_name})
-                if not rows:
-                    continue
-                table_id = rows[0]['id']
-                client.execute_update(
-                    "DELETE FROM column_schema WHERE table_id = :id",
-                    {'id': table_id})
-                client.execute_update(
-                    "DELETE FROM table_schema WHERE id = :id",
-                    {'id': table_id})
-        finally:
-            client.close()
+        # 临时文件库整体丢弃：无共享真实库需要保持干净
+        shutil.rmtree(getattr(self, '_tmpdir', ''), ignore_errors=True)
 
     def _make_client(self):
-        """按项目配置构建 MySQL 客户端（避免硬编码连接串）。"""
-        from config import (MYSQL_HOST, MYSQL_PORT, MYSQL_USER,
-                            MYSQL_PASSWORD, MYSQL_DATABASE)
-        from core.history.mysql_client import MySQLClient
-        return MySQLClient(MYSQL_HOST, MYSQL_PORT, MYSQL_USER,
-                           MYSQL_PASSWORD, MYSQL_DATABASE)
+        """构建指向临时文件库的 SQLite 客户端（每个测试实例独立隔离）。"""
+        from core.history.sqlite_client import SQLiteClient
+        return SQLiteClient(self._db_path)
 
-    def test_21_mysql_connect(self):
-        """测试 21: MySQL 连接"""
+    def test_21_sqlite_connect(self):
+        """测试 21: SQLite 连接"""
         client = self._make_client()
         assert client.connect()
         client.close()
 
-    def test_22_mysql_get_statistics(self):
+    def test_22_sqlite_get_statistics(self):
         """测试 22: 获取数据库统计"""
         client = self._make_client()
         client.connect()
@@ -302,7 +283,7 @@ class TestMySQLClient:
         assert stats['total_tables'] >= 3
         client.close()
 
-    def test_23_mysql_get_table_schema(self):
+    def test_23_sqlite_get_table_schema(self):
         """测试 23: 获取表结构"""
         client = self._make_client()
         client.connect()
@@ -310,7 +291,7 @@ class TestMySQLClient:
         assert len(tables) >= 3
         client.close()
 
-    def test_24_mysql_get_column_schema(self):
+    def test_24_sqlite_get_column_schema(self):
         """测试 24: 获取字段结构"""
         client = self._make_client()
         client.connect()
@@ -318,8 +299,8 @@ class TestMySQLClient:
         assert len(columns) >= 3
         client.close()
 
-    def test_25_mysql_save_history(self):
-        """测试 25: 保存 SQL 历史（写后清理，避免污染真实库）"""
+    def test_25_sqlite_save_history(self):
+        """测试 25: 保存 SQL 历史（写后清理，保持临时库干净）"""
         client = self._make_client()
         client.connect()
         history_id = client.save_sql_history(
@@ -329,7 +310,7 @@ class TestMySQLClient:
         )
         assert history_id is not None
         assert history_id > 0
-        # 清理测试写入的记录，保持业务库干净
+        # 清理测试写入的记录
         client.execute_update(
             "DELETE FROM sql_generation_history WHERE id = :id",
             {'id': history_id},
@@ -337,7 +318,7 @@ class TestMySQLClient:
         )
         client.close()
 
-    def test_26_mysql_get_history(self):
+    def test_26_sqlite_get_history(self):
         """测试 26: 获取历史记录"""
         client = self._make_client()
         client.connect()
@@ -429,13 +410,13 @@ class TestIntegration:
     
     def test_34_full_workflow_import(self):
         """测试 34: 完整工作流导入 - 跳过 is_safe_sql"""
-        from core.history.mysql_client import MySQLClient
+        from core.history.sqlite_client import SQLiteClient
         from core.retrieval.bm25_tfidf import KnowledgeRetriever
         from core.sql.validator import SQLValidator
         # 所有核心模块可导入
         assert KnowledgeRetriever is not None
         assert SQLValidator is not None
-        assert MySQLClient is not None
+        assert SQLiteClient is not None
         
     def test_35_end_to_end_simulation(self):
         """测试 35: 端到端模拟流程"""
@@ -569,7 +550,7 @@ def run_tests_and_generate_report():
         TestRetrieval,
         TestSQLValidator,
         TestSQLGenerator,
-        TestMySQLClient,
+        TestSQLiteClient,
         TestNeo4jClient,
         TestPromptTemplates,
         TestLLMFactory,
@@ -639,7 +620,7 @@ def run_tests_and_generate_report():
         '文本检索模块': [d for d in results['details'] if 'TestRetrieval' in d['name']],
         'SQL 校验模块': [d for d in results['details'] if 'TestSQLValidator' in d['name']],
         'SQL 生成器模块': [d for d in results['details'] if 'TestSQLGenerator' in d['name']],
-        'MySQL 客户端': [d for d in results['details'] if 'TestMySQLClient' in d['name']],
+        'SQLite 客户端': [d for d in results['details'] if 'TestSQLiteClient' in d['name']],
         'Neo4j 客户端': [d for d in results['details'] if 'TestNeo4jClient' in d['name']],
         '提示词模板': [d for d in results['details'] if 'TestPromptTemplates' in d['name']],
         'LLM 工厂': [d for d in results['details'] if 'TestLLMFactory' in d['name']],

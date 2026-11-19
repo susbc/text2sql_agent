@@ -5,13 +5,13 @@ import re
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from loguru import logger
 
 SECRET = "bearer-runtime-secret-8491"
-MYSQL_PRIVATE_PAYLOAD = (
+DB_PRIVATE_PAYLOAD = (
     "查询手机号 13800138000 </question_data>；SELECT password FROM private_users "
     "Authorization: Bearer mysql-secret password=database-secret"
 )
@@ -97,7 +97,7 @@ def test_sync_repair_exception_uses_only_safe_metadata(caplog, governed: bool):
                     "SELECT missing FROM orders",
                     [{"code": "UNKNOWN_COLUMN"}],
                     "语义上下文",
-                    question=MYSQL_PRIVATE_PAYLOAD,
+                    question=DB_PRIVATE_PAYLOAD,
                 )
             stage = "sql_repair_governed"
         else:
@@ -113,7 +113,7 @@ def test_sync_repair_exception_uses_only_safe_metadata(caplog, governed: bool):
 
     _assert_safe_failure_log(caplog.text, stage)
     if governed:
-        assert MYSQL_PRIVATE_PAYLOAD not in caplog.text
+        assert DB_PRIVATE_PAYLOAD not in caplog.text
         assert "13800138000" not in caplog.text
         assert "question_data" not in caplog.text
 
@@ -136,7 +136,7 @@ async def test_async_repair_exception_uses_only_safe_metadata(
                     "SELECT missing FROM orders",
                     [{"code": "UNKNOWN_COLUMN"}],
                     "语义上下文",
-                    question=MYSQL_PRIVATE_PAYLOAD,
+                    question=DB_PRIVATE_PAYLOAD,
                 )
             stage = "sql_repair_governed_async"
         else:
@@ -148,7 +148,7 @@ async def test_async_repair_exception_uses_only_safe_metadata(
 
     _assert_safe_failure_log(caplog.text, stage)
     if governed:
-        assert MYSQL_PRIVATE_PAYLOAD not in caplog.text
+        assert DB_PRIVATE_PAYLOAD not in caplog.text
         assert "13800138000" not in caplog.text
         assert "question_data" not in caplog.text
 
@@ -188,8 +188,8 @@ def test_safe_streamlit_sink_never_receives_bearer_content():
     assert "Bearer" not in rendered[0]
 
 
-def _assert_mysql_failure_is_metadata_only(text: str, stage: str) -> None:
-    assert MYSQL_PRIVATE_PAYLOAD not in text
+def _assert_db_failure_is_metadata_only(text: str, stage: str) -> None:
+    assert DB_PRIVATE_PAYLOAD not in text
     for raw_fragment in (
         "查询手机号",
         "13800138000",
@@ -208,41 +208,34 @@ def _assert_mysql_failure_is_metadata_only(text: str, stage: str) -> None:
 @pytest.mark.parametrize(
     ("operation", "expected", "stage"),
     [
-        ("query", [], "mysql_query"),
-        ("update", 0, "mysql_update"),
-        ("history_save", None, "mysql_history_save"),
-        ("governed_history_save", None, "mysql_governed_history_save"),
+        ("query", [], "sqlite_query"),
+        ("update", 0, "sqlite_update"),
+        ("history_save", None, "sqlite_history_save"),
+        ("governed_history_save", None, "sqlite_governed_history_save"),
     ],
 )
-def test_mysql_public_failure_paths_never_log_exception_sql_or_params(
+def test_sqlite_public_failure_paths_never_log_exception_sql_or_params(
     caplog, operation: str, expected, stage: str
 ):
     """Break caught: database exceptions or statements reaching any public log sink."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
     verifier = Mock()
     verifier.consume.return_value = True
-    client = MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
-        governance_proof_verifier=verifier,
-    )
+    client = SQLiteClient(":memory:", governance_proof_verifier=verifier)
 
     @contextmanager
     def failing_connection():
-        raise AuthenticationError(MYSQL_PRIVATE_PAYLOAD)
+        raise AuthenticationError(DB_PRIVATE_PAYLOAD)
         yield  # pragma: no cover
 
     client.get_connection = failing_connection
     command = SimpleNamespace(
         session_id="session-a",
-        user_query=MYSQL_PRIVATE_PAYLOAD,
+        user_query=DB_PRIVATE_PAYLOAD,
         generated_sql="SELECT password FROM private_users",
         matched_knowledge_json=None,
-        retrieval_query=MYSQL_PRIVATE_PAYLOAD,
+        retrieval_query=DB_PRIVATE_PAYLOAD,
         validation_status="success",
         validation_error=None,
         semantic_datasource="sales",
@@ -264,38 +257,31 @@ def test_mysql_public_failure_paths_never_log_exception_sql_or_params(
             )
         elif operation == "history_save":
             result = client.save_sql_history(
-                MYSQL_PRIVATE_PAYLOAD,
+                DB_PRIVATE_PAYLOAD,
                 "SELECT password FROM private_users",
             )
         else:
             result = client.save_governed_sql_history(command, object())
 
     assert result == expected
-    _assert_mysql_failure_is_metadata_only(caplog.text, stage)
+    _assert_db_failure_is_metadata_only(caplog.text, stage)
 
 
-def test_mysql_guarded_finalize_masks_failure_and_preserves_false_result(caplog):
+def test_sqlite_guarded_finalize_masks_failure_and_preserves_false_result(caplog):
     """Break caught: guarded finalization propagating or logging sensitive failures."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
     verifier = Mock()
     verifier.consume.return_value = True
-    client = MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
-        governance_proof_verifier=verifier,
-    )
-    client.execute_update = Mock(side_effect=AuthenticationError(MYSQL_PRIVATE_PAYLOAD))
+    client = SQLiteClient(":memory:", governance_proof_verifier=verifier)
+    client.execute_update = Mock(side_effect=AuthenticationError(DB_PRIVATE_PAYLOAD))
     command = SimpleNamespace(
         history_id=7,
         session_id="session-a",
-        user_query=MYSQL_PRIVATE_PAYLOAD,
+        user_query=DB_PRIVATE_PAYLOAD,
         generated_sql="SELECT password FROM private_users",
         execution_status="fail",
-        execution_error=MYSQL_PRIVATE_PAYLOAD,
+        execution_error=DB_PRIVATE_PAYLOAD,
         execution_result_json=None,
         semantic_datasource="sales",
         semantic_dialect="mysql",
@@ -307,72 +293,67 @@ def test_mysql_guarded_finalize_masks_failure_and_preserves_false_result(caplog)
         result = client.finalize_governed_sql_execution(command, object())
 
     assert result is False
-    _assert_mysql_failure_is_metadata_only(
-        caplog.text, "mysql_governed_history_finalize"
+    _assert_db_failure_is_metadata_only(
+        caplog.text, "sqlite_governed_history_finalize"
     )
 
 
-def test_mysql_migration_logs_only_safe_metadata_before_reraising(caplog):
+def test_sqlite_migration_logs_only_safe_metadata_before_reraising(caplog):
     """Break caught: migration DDL or driver text leaking on a non-duplicate error."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
-    client.execute_update = Mock(side_effect=AuthenticationError(MYSQL_PRIVATE_PAYLOAD))
+    client = SQLiteClient(":memory:")
+    client.execute_update = Mock(side_effect=AuthenticationError(DB_PRIVATE_PAYLOAD))
 
     with capture_loguru(caplog), pytest.raises(AuthenticationError):
         client._apply_history_schema_change(
             "ALTER TABLE private_users ADD COLUMN password VARCHAR(255)"
         )
 
-    _assert_mysql_failure_is_metadata_only(
-        caplog.text, "mysql_history_schema_migration"
+    _assert_db_failure_is_metadata_only(
+        caplog.text, "sqlite_history_schema_migration"
     )
 
 
-def test_mysql_connect_cleanup_failure_keeps_the_false_public_result(
+def test_sqlite_connect_cleanup_failure_keeps_the_false_public_result(
     caplog, monkeypatch
 ):
     """Break caught: engine cleanup masking the stable connection failure contract."""
-    import core.history.mysql_client as mysql_module
+    from sqlalchemy import create_engine
 
-    engine = Mock()
-    engine.connect.side_effect = AuthenticationError(MYSQL_PRIVATE_PAYLOAD)
-    engine.dispose.side_effect = AuthenticationError(MYSQL_PRIVATE_PAYLOAD)
-    monkeypatch.setattr(mysql_module, "create_engine", Mock(return_value=engine))
-    client = mysql_module.MySQLClient(
-        "localhost", 3306, "user", "password", "database"
-    )
+    import core.history.sqlite_client as sqlite_module
+
+    # event.listen 要求真实 Engine 目标：用真实内存引擎，仅 mock connect/dispose
+    # 注入「连接失败 + 清理失败」双重故障。
+    engine = create_engine("sqlite://")
+    engine.connect = Mock(side_effect=AuthenticationError(DB_PRIVATE_PAYLOAD))
+    engine.dispose = Mock(side_effect=AuthenticationError(DB_PRIVATE_PAYLOAD))
+    monkeypatch.setattr(sqlite_module, "create_engine", Mock(return_value=engine))
+    client = sqlite_module.SQLiteClient(":memory:")
 
     with capture_loguru(caplog):
         result = client.connect()
 
     assert result is False
     assert client.engine is None
-    _assert_mysql_failure_is_metadata_only(caplog.text, "mysql_connect")
-    assert "stage=mysql_connect_cleanup" in caplog.text
+    _assert_db_failure_is_metadata_only(caplog.text, "sqlite_connect")
+    assert "stage=sqlite_connect_cleanup" in caplog.text
 
 
-def test_mysql_nonexception_logs_do_not_echo_config_or_table_identifiers(
-    caplog, monkeypatch
+def test_sqlite_nonexception_logs_do_not_echo_config_or_table_identifiers(
+    caplog, tmp_path
 ):
     """Break caught: success/fallback logs bypassing the safe exception boundary."""
-    import core.history.mysql_client as mysql_module
+    from core.history.sqlite_client import SQLiteClient
 
-    engine = MagicMock()
-    monkeypatch.setattr(mysql_module, "create_engine", Mock(return_value=engine))
-    client = mysql_module.MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        MYSQL_PRIVATE_PAYLOAD,
-    )
-    client._migrate_history_schema = Mock()
+    # 秘密载荷进入库文件名：初始化成功日志只允许输出路径指纹；
+    # 不存在的表名同样只允许输出指纹（真实临时文件库，无需 mock 引擎）。
+    client = SQLiteClient(str(tmp_path / f"{DB_PRIVATE_PAYLOAD}.db"))
 
     with capture_loguru(caplog):
         assert client.connect() is True
-        client.execute_query = Mock(return_value=[])
-        assert client.upsert_column_schema(MYSQL_PRIVATE_PAYLOAD, "id") is False
+        assert client.upsert_column_schema(DB_PRIVATE_PAYLOAD, "id") is False
+    client.close()
 
     for raw_fragment in (
         "查询手机号",

@@ -152,7 +152,7 @@ def test_read_only_guard_accepts_single_read_query(sql):
     assert is_safe_read_query(sql) is True
 
 
-def _make_generator(mysql_client=None):
+def _make_generator(db_client=None):
     from core.sql.generator import SQLGenerator
 
     retriever = Mock()
@@ -164,7 +164,7 @@ def _make_generator(mysql_client=None):
     sql_chain.generate_async = AsyncMock(
         return_value={"status": "success", "sql": "SELECT 1"}
     )
-    generator = SQLGenerator(Mock(), retriever, sql_chain, mysql_client=mysql_client)
+    generator = SQLGenerator(Mock(), retriever, sql_chain, db_client=db_client)
     context = {
         "final_query": "query",
         "detected_dialect": "mysql",
@@ -671,11 +671,11 @@ def test_single_few_shot_add_rejects_noncurrent_or_ungoverned_history():
     assert [record["id"] for record in retriever.history_records] == [1]
 
 
-def test_mysql_few_shot_query_requires_full_governed_identity_and_both_successes():
+def test_sqlite_few_shot_query_requires_full_governed_identity_and_both_successes():
     """Startup candidates must have passed validation as well as execution."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
     client.execute_query = Mock(return_value=[])
 
     client.get_successful_history_for_few_shot(
@@ -706,11 +706,11 @@ def test_mysql_few_shot_query_requires_full_governed_identity_and_both_successes
     }
 
 
-def test_mysql_few_shot_query_preserves_ungoverned_legacy_compatibility():
+def test_sqlite_few_shot_query_preserves_ungoverned_legacy_compatibility():
     """Governance-off startup keeps the historical dual-success behavior."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
     client.execute_query = Mock(return_value=[])
 
     client.get_successful_history_for_few_shot(limit=12)
@@ -726,21 +726,14 @@ def test_mysql_few_shot_query_preserves_ungoverned_legacy_compatibility():
 
 def test_guarded_history_update_binds_session_sql_and_validation_status():
     """The storage mutation itself must retain the verified history predicates."""
-    from core.history.mysql_client import MySQLClient
     from core.history.proof import (
         GovernedHistoryFinalization,
         create_history_proof_pair,
     )
+    from core.history.sqlite_client import SQLiteClient
 
     issuer, verifier = create_history_proof_pair()
-    client = MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
-        governance_proof_verifier=verifier,
-    )
+    client = SQLiteClient(":memory:", governance_proof_verifier=verifier)
     client.execute_update = Mock(return_value=1)
     command = GovernedHistoryFinalization(
         history_id=7,
@@ -853,20 +846,13 @@ def test_history_governance_schema_migration_tolerates_concurrent_duplicates():
     assert client.execute_update.call_count == 6
 
 
-def test_mysql_guarded_save_binds_complete_governance_identity():
+def test_sqlite_guarded_save_binds_complete_governance_identity():
     """The durable INSERT, not only the generator call, carries every identity field."""
-    from core.history.mysql_client import MySQLClient
     from core.history.proof import GovernedHistorySave, create_history_proof_pair
+    from core.history.sqlite_client import SQLiteClient
 
     issuer, verifier = create_history_proof_pair()
-    client = MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
-        governance_proof_verifier=verifier,
-    )
+    client = SQLiteClient(":memory:", governance_proof_verifier=verifier)
     connection = Mock()
     connection.execute.return_value.lastrowid = 17
 
@@ -935,9 +921,9 @@ def test_mysql_connect_migrates_history_before_reporting_success(monkeypatch):
 
 def test_history_update_preserves_legacy_seven_positional_arguments():
     """The old seventh positional bool must remain the validation-success flag."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient.__new__(MySQLClient)
+    client = SQLiteClient.__new__(SQLiteClient)
     client.execute_update = Mock(return_value=1)
 
     updated = client.update_sql_execution(
@@ -1050,10 +1036,10 @@ def test_read_query_constraint_rejects_nonliteral_or_negative_outer_limit(sql: s
         constrain_read_query(sql, max_rows=50)
 
 
-def test_mysql_query_can_raise_for_business_layer():
-    from core.history.mysql_client import MySQLClient
+def test_sqlite_query_can_raise_for_business_layer():
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
 
     @contextmanager
     def failing_connection():
@@ -1091,11 +1077,11 @@ def test_mysql_limited_query_streams_and_reports_truncation():
     connection.execution_options.assert_called_once_with(stream_results=True)
 
 
-def test_disconnected_neo4j_falls_back_to_mysql_schema():
-    mysql = Mock()
-    mysql.get_table_schema.return_value = [{"table_name": "users"}]
-    mysql.get_column_schema.return_value = [{"column_name": "id"}]
-    generator = _make_generator(mysql)
+def test_disconnected_neo4j_falls_back_to_db_schema():
+    db = Mock()
+    db.get_table_schema.return_value = [{"table_name": "users"}]
+    db.get_column_schema.return_value = [{"column_name": "id"}]
+    generator = _make_generator(db)
     generator.neo4j_client = Mock(driver=None)
 
     schema = generator._get_schema_info()

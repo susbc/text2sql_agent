@@ -9,14 +9,10 @@ import pytest
 
 
 def _recording_client(*, governance_proof_verifier=None):
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
+    client = SQLiteClient(
+        ":memory:",
         governance_proof_verifier=governance_proof_verifier,
     )
     connection = Mock()
@@ -57,9 +53,9 @@ def test_public_history_save_cannot_persist_governance_claims():
 
 def test_public_execution_update_cannot_mutate_a_governed_row():
     """The legacy updater remains usable but its SQL excludes governed rows."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
     client.execute_update = Mock(return_value=1)
 
     assert client.update_sql_execution(17, "success") is True
@@ -76,9 +72,9 @@ def test_public_execution_update_cannot_mutate_a_governed_row():
 
 def test_public_execution_update_rejects_governance_identity_arguments():
     """Legacy callers cannot turn identity predicates into a guarded mutation."""
-    from core.history.mysql_client import MySQLClient
+    from core.history.sqlite_client import SQLiteClient
 
-    client = MySQLClient("localhost", 3306, "user", "password", "database")
+    client = SQLiteClient(":memory:")
     client.execute_update = Mock(return_value=1)
 
     updated = client.update_sql_execution(
@@ -287,21 +283,14 @@ def test_history_proof_pair_rejects_invalid_outstanding_capacity(max_outstanding
 
 def test_guarded_success_finalization_is_a_one_time_pending_cas():
     """Only a proved pending row can become execution-success and governed."""
-    from core.history.mysql_client import MySQLClient
     from core.history.proof import (
         GovernedHistoryFinalization,
         create_history_proof_pair,
     )
+    from core.history.sqlite_client import SQLiteClient
 
     issuer, verifier = create_history_proof_pair()
-    client = MySQLClient(
-        "localhost",
-        3306,
-        "user",
-        "password",
-        "database",
-        governance_proof_verifier=verifier,
-    )
+    client = SQLiteClient(":memory:", governance_proof_verifier=verifier)
     client.execute_update = Mock(return_value=1)
     command = GovernedHistoryFinalization(
         history_id=17,
@@ -342,17 +331,17 @@ def test_application_context_wires_separate_proof_roles(monkeypatch):
     from core.history.proof import GovernedHistorySave
 
     context = ApplicationContext({})
-    mysql_instance = Mock()
-    mysql_instance.connect.return_value = False
-    mysql_constructor = Mock(return_value=mysql_instance)
+    db_instance = Mock()
+    db_instance.connect.return_value = False
+    db_constructor = Mock(return_value=db_instance)
     monkeypatch.setattr(
-        "core.history.mysql_client.MySQLClient",
-        mysql_constructor,
+        "core.history.sqlite_client.SQLiteClient",
+        db_constructor,
     )
 
-    context._init_mysql()
+    context._init_db()
 
-    verifier = mysql_constructor.call_args.kwargs["governance_proof_verifier"]
+    verifier = db_constructor.call_args.kwargs["governance_proof_verifier"]
     generator_constructor = Mock(return_value=object())
     monkeypatch.setattr(
         "core.sql.generator.SQLGenerator",

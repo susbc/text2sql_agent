@@ -51,7 +51,7 @@ def show_system_info() -> None:
 
     with config_col2:
         # 脱敏展示：隐藏主机地址和端口详情，仅显示连接状态
-        mysql_status = "已连接" if (ctx and ctx.mysql_client and ctx.mysql_client.engine) else "未连接"
+        mysql_status = "已连接" if (ctx and ctx.db_client and ctx.db_client.engine) else "未连接"
         neo4j_status = "已连接" if NEO4J_ENABLED and (ctx and ctx.neo4j_client and ctx.neo4j_client.driver) else "未连接/未启用"
         st.markdown("""
         **数据库配置**

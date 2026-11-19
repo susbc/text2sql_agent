@@ -30,14 +30,6 @@ from config import (
     LLM_MODEL,
     LLM_PROVIDER,
     MAX_PREPARED_REQUESTS,
-    MYSQL_DATABASE,
-    MYSQL_HOST,
-    MYSQL_MAX_OVERFLOW,
-    MYSQL_PASSWORD,
-    MYSQL_POOL_SIZE,
-    MYSQL_POOL_TIMEOUT,
-    MYSQL_PORT,
-    MYSQL_USER,
     NEO4J_CONNECTION_TIMEOUT,
     NEO4J_DATABASE,
     NEO4J_ENABLED,
@@ -64,6 +56,7 @@ from config import (
     SQL_REPAIR_MAX_ATTEMPTS,
     SQL_SCOPE_ENFORCEMENT,
     SQL_VALIDATION_ENABLED,
+    SQLITE_PATH,
 )
 from core.app_context import ApplicationContext
 
@@ -73,12 +66,7 @@ def initialize_system():
     logger.info("开始初始化系统...")
 
     app_ctx = ApplicationContext(config={
-        'mysql_host': MYSQL_HOST, 'mysql_port': MYSQL_PORT,
-        'mysql_user': MYSQL_USER, 'mysql_password': MYSQL_PASSWORD,
-        'mysql_database': MYSQL_DATABASE,
-        'mysql_pool_size': MYSQL_POOL_SIZE,
-        'mysql_max_overflow': MYSQL_MAX_OVERFLOW,
-        'mysql_pool_timeout': MYSQL_POOL_TIMEOUT,
+        'sqlite_path': SQLITE_PATH,
         'history_max_records': HISTORY_MAX_RECORDS,
         'governed_history_binding_ttl_seconds': GOVERNED_HISTORY_BINDING_TTL_SECONDS,
         'neo4j_enabled': NEO4J_ENABLED, 'neo4j_uri': NEO4J_URI,

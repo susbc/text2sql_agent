@@ -179,7 +179,7 @@ class ApplicationContext:
         # 组件实例（延迟初始化）
         self._llm = None
         self._neo4j_client = None
-        self._mysql_client = None
+        self._db_client = None
         self._embedding_factory = None
         self._knowledge_retriever = None
         self._sql_generator = None
@@ -210,9 +210,9 @@ class ApplicationContext:
             return self._neo4j_client
 
     @property
-    def mysql_client(self):
+    def db_client(self):
         with self._reload_lock:
-            return self._mysql_client
+            return self._db_client
 
     @property
     def embedding_factory(self):
@@ -265,7 +265,7 @@ class ApplicationContext:
             self._validate_candidate_config(self._config)
             self._init_llm()
             self._init_neo4j()
-            self._init_mysql()
+            self._init_db()
             self._init_embedding()
             self._init_retriever()
             self._init_sql_chain()
@@ -321,27 +321,21 @@ class ApplicationContext:
         neo4j_enabled = self._config.get('neo4j_enabled', False)
         if neo4j_enabled:
             if not self._neo4j_client.connect():
-                logger.warning("Neo4j 连接失败，将使用 MySQL 元数据模式")
+                logger.warning("Neo4j 连接失败，将使用 SQLite 元数据模式")
         else:
-            logger.info("Neo4j 未启用，使用 MySQL 元数据模式")
+            logger.info("Neo4j 未启用，使用 SQLite 元数据模式")
 
-    def _init_mysql(self):
-        """初始化 MySQL 客户端"""
-        from core.history.mysql_client import MySQLClient
-        self._mysql_client = MySQLClient(
-            host=self._config.get('mysql_host', 'localhost'),
-            port=self._config.get('mysql_port', 3306),
-            user=self._config.get('mysql_user', 'root'),
-            password=self._config.get('mysql_password', 'root'),
-            database=self._config.get('mysql_database', 'text2sql_db'),
-            pool_size=self._config.get('mysql_pool_size', 10),
-            max_overflow=self._config.get('mysql_max_overflow', 20),
-            pool_timeout=self._config.get('mysql_pool_timeout', 30),
+    def _init_db(self):
+        """初始化 SQLite 客户端"""
+        from core.history.sqlite_client import SQLiteClient
+        default_path = str(Path(__file__).parents[1] / "data" / "text2sql.db")
+        self._db_client = SQLiteClient(
+            path=self._config.get('sqlite_path', default_path),
             history_max_records=self._config.get('history_max_records', 1000),
             governance_proof_verifier=self._history_proof_verifier,
         )
-        if not self._mysql_client.connect():
-            logger.warning("MySQL 连接失败，历史记录功能可能不可用")
+        if not self._db_client.connect():
+            logger.warning("SQLite 连接失败，历史记录功能可能不可用")
 
     def _init_embedding(self):
         """初始化 Embedding Factory"""
@@ -383,7 +377,7 @@ class ApplicationContext:
             'enable_rewrite': False,
             'few_shot_enabled': config.get('few_shot_enabled', True),
             'few_shot_top_k': config.get('few_shot_top_k', 3),
-            'sql_dialect': config.get('sql_dialect', 'mysql'),
+            'sql_dialect': config.get('sql_dialect', 'sqlite'),
             'sql_validation_enabled': config.get('sql_validation_enabled', True),
             'sql_max_length': config.get('sql_max_length', 2000),
             'sql_query_max_rows': config.get('sql_query_max_rows', 500),
@@ -404,7 +398,7 @@ class ApplicationContext:
         from core.chain.sql_chain import SQLGenerationChain
         self._sql_chain = SQLGenerationChain(
             llm=self._llm,
-            dialect=self._config.get('sql_dialect', 'mysql'),
+            dialect=self._config.get('sql_dialect', 'sqlite'),
             retrieval_top_k=self._config.get('retrieval_top_k', 5),
             prompt_max_length=self._config.get('prompt_max_length', 4000),
         )
@@ -457,7 +451,7 @@ class ApplicationContext:
             preflight = None
             if config.get('sql_explain_enabled', False):
                 preflight = MySQLExplainPreflight(
-                    self._mysql_client,
+                    self._db_client,
                     timeout_ms=config.get('sql_explain_timeout_ms', 3000),
                     max_estimated_rows=config.get(
                         'sql_explain_max_estimated_rows', 0
@@ -502,7 +496,7 @@ class ApplicationContext:
             llm=llm,
             knowledge_retriever=knowledge_retriever,
             sql_chain=sql_chain,
-            mysql_client=self._mysql_client,
+            db_client=self._db_client,
             config=self._generator_config(config),
             neo4j_client=(
                 self._neo4j_client
@@ -657,7 +651,7 @@ class ApplicationContext:
             )
             candidate_chain = SQLGenerationChain(
                 llm=candidate_llm,
-                dialect=candidate_config.get('sql_dialect', 'mysql'),
+                dialect=candidate_config.get('sql_dialect', 'sqlite'),
                 retrieval_top_k=candidate_config.get('retrieval_top_k', 5),
                 prompt_max_length=candidate_config.get('prompt_max_length', 4000),
             )
@@ -767,7 +761,7 @@ class ApplicationContext:
             if "sql_dialect" in updates:
                 candidate_chain = SQLGenerationChain(
                     llm=snapshot.llm,
-                    dialect=candidate_config.get('sql_dialect', 'mysql'),
+                    dialect=candidate_config.get('sql_dialect', 'sqlite'),
                     retrieval_top_k=candidate_config.get('retrieval_top_k', 5),
                     prompt_max_length=candidate_config.get('prompt_max_length', 4000),
                 )
@@ -832,8 +826,8 @@ class ApplicationContext:
                         'description': table.get('description', ''),
                         'database_id': table.get('database_id'),
                     })
-        elif self._mysql_client and self._mysql_client.engine:
-            for table in self._mysql_client.get_table_schema():
+        elif self._db_client and self._db_client.engine:
+            for table in self._db_client.get_table_schema():
                 name = table.get('table_name', '')
                 doc = f"{name} {table.get('table_comment', '')}".strip()
                 if doc:
@@ -848,8 +842,8 @@ class ApplicationContext:
         if config.get('few_shot_enabled', True):
             if correctness_pipeline is not None:
                 retriever.build_few_shot_index([])
-            elif self._mysql_client and self._mysql_client.engine:
-                records = self._mysql_client.get_successful_history_for_few_shot(
+            elif self._db_client and self._db_client.engine:
+                records = self._db_client.get_successful_history_for_few_shot(
                     limit=100,
                 )
                 retriever.build_few_shot_index(records)
@@ -872,7 +866,7 @@ class ApplicationContext:
             if neo4j_enabled and self._neo4j_client and self._neo4j_client.driver:
                 self._load_knowledge_from_neo4j()
             else:
-                self._load_knowledge_from_mysql()
+                self._load_knowledge_from_db()
             if index_cache_enabled:
                 try:
                     self._knowledge_retriever.save_index(index_dir)
@@ -900,9 +894,9 @@ class ApplicationContext:
             self._knowledge_retriever.retriever.index_documents(documents, metadata_list)
             logger.info(f"知识库索引完成：{len(documents)} 个文档 (Neo4j)")
 
-    def _load_knowledge_from_mysql(self):
-        """从 MySQL 加载元数据"""
-        tables = self._mysql_client.get_table_schema()
+    def _load_knowledge_from_db(self):
+        """从 SQLite 加载元数据"""
+        tables = self._db_client.get_table_schema()
         documents = []
         metadata_list = []
         for table in tables:
@@ -916,7 +910,7 @@ class ApplicationContext:
                 })
         if documents:
             self._knowledge_retriever.retriever.index_documents(documents, metadata_list)
-            logger.info(f"知识库索引完成：{len(documents)} 个文档 (MySQL)")
+            logger.info(f"知识库索引完成：{len(documents)} 个文档 (SQLite)")
 
     def _load_few_shot_history(self):
         """从已验证或执行成功的历史记录构建 Few-Shot 索引。"""
@@ -925,10 +919,10 @@ class ApplicationContext:
         if self._correctness_pipeline is not None:
             self._knowledge_retriever.build_few_shot_index([])
             return
-        if not self._mysql_client or not self._mysql_client.engine:
+        if not self._db_client or not self._db_client.engine:
             return
         try:
-            records = self._mysql_client.get_successful_history_for_few_shot(
+            records = self._db_client.get_successful_history_for_few_shot(
                 limit=100,
             )
             self._knowledge_retriever.build_few_shot_index(records)
@@ -943,7 +937,7 @@ class ApplicationContext:
         self._initialized = False
         self._llm = None
         self._neo4j_client = None
-        self._mysql_client = None
+        self._db_client = None
         self._embedding_factory = None
         self._knowledge_retriever = None
         self._sql_generator = None
@@ -957,8 +951,8 @@ class ApplicationContext:
         """关闭所有连接，释放缓存资源"""
         if self._neo4j_client:
             self._neo4j_client.close()
-        if self._mysql_client:
-            self._mysql_client.close()
+        if self._db_client:
+            self._db_client.close()
         # 释放 Embedding 缓存
         if self._embedding_factory:
             try:
@@ -972,15 +966,8 @@ def create_app_context_from_env() -> ApplicationContext:
     """从环境变量创建应用上下文（便捷函数）"""
     import config
     return ApplicationContext(config={
-        # MySQL
-        'mysql_host': config.MYSQL_HOST,
-        'mysql_port': config.MYSQL_PORT,
-        'mysql_user': config.MYSQL_USER,
-        'mysql_password': config.MYSQL_PASSWORD,
-        'mysql_database': config.MYSQL_DATABASE,
-        'mysql_pool_size': config.MYSQL_POOL_SIZE,
-        'mysql_max_overflow': config.MYSQL_MAX_OVERFLOW,
-        'mysql_pool_timeout': config.MYSQL_POOL_TIMEOUT,
+        # SQLite
+        'sqlite_path': config.SQLITE_PATH,
         'history_max_records': config.HISTORY_MAX_RECORDS,
         'governed_history_binding_ttl_seconds': (
             config.GOVERNED_HISTORY_BINDING_TTL_SECONDS

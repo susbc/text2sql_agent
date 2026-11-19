@@ -26,18 +26,17 @@ class TestNeo4jClient:
         # 不实际连接，只测试接口
 
 
-class TestMySQLClient:
-    """MySQL 客户端测试"""
+class TestSQLiteClient:
+    """SQLite 客户端测试"""
 
     def test_init(self):
         """测试初始化"""
-        from core.history.mysql_client import MySQLClient
+        from core.history.sqlite_client import SQLiteClient
 
-        client = MySQLClient("localhost", 3306, "root", "root", "text2sql_db")
+        client = SQLiteClient(":memory:")
 
-        assert client.host == "localhost"
-        assert client.port == 3306
-        assert client.database == "text2sql_db"
+        assert client.path == ":memory:"
+        assert client.database == "main"
 
 
 class TestBM25Retriever:
@@ -236,10 +235,10 @@ class TestIntegration:
             [{'node_type': 'table', 'name': 'users'}]
         )
 
-        # 模拟 MySQL 客户端
-        mock_mysql = Mock()
-        mock_mysql.get_table_schema.return_value = []
-        mock_mysql.get_column_schema.return_value = []
+        # 模拟 SQLite 客户端
+        mock_db = Mock()
+        mock_db.get_table_schema.return_value = []
+        mock_db.get_column_schema.return_value = []
 
         # 创建生成器
         from core.chain.sql_chain import SQLGenerationChain
@@ -250,7 +249,7 @@ class TestIntegration:
             llm=mock_llm,
             knowledge_retriever=retriever,
             sql_chain=sql_chain,
-            mysql_client=mock_mysql
+            db_client=mock_db
         )
 
         # 测试生成

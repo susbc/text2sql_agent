@@ -43,13 +43,13 @@ NOKEY_PROVIDER_LABEL = LLM_PROVIDERS[NOKEY_PROVIDER]["label"]
 class FakeContext:
     """只实现 app.py 会触到的 ApplicationContext 表面。
 
-    mysql_client / neo4j_client / sql_generator 一律为 None，使所有数据库分支
+    db_client / neo4j_client / sql_generator 一律为 None，使所有数据库分支
     短路，测试因此完全离线且不依赖 .env 里的 NEO4J_ENABLED。
     """
 
     def __init__(self, config: dict[str, Any]):
         self._config = dict(config)
-        self.mysql_client = None
+        self.db_client = None
         self.neo4j_client = None
         self.sql_generator = None
         self.semantic_registry = None

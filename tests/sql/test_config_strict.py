@@ -398,15 +398,8 @@ def test_history_capacity_environment_cannot_disable_or_exceed_pruning(raw: str)
 
 
 @pytest.mark.parametrize("limit", [0, -1, 10_001, True])
-def test_mysql_client_rejects_unbounded_history_configuration(limit):
-    from core.history.mysql_client import MySQLClient
+def test_sqlite_client_rejects_unbounded_history_configuration(limit):
+    from core.history.sqlite_client import SQLiteClient
 
     with pytest.raises(ValueError, match="history_max_records"):
-        MySQLClient(
-            host="localhost",
-            port=3306,
-            user="user",
-            password="password",
-            database="database",
-            history_max_records=limit,
-        )
+        SQLiteClient(":memory:", history_max_records=limit)
