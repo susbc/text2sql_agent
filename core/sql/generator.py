@@ -537,13 +537,16 @@ class SQLGenerator:
             }
         else:
             result['validation'] = validate_sql(sql, dialect=dialect)
-            if result['validation'].get('valid') and self.config.get(
-                'sql_scope_enforcement', True
-            ):
+            if result['validation'].get('valid'):
+                if self.config.get('sql_scope_enforcement', True):
+                    scope_tables, scope_schemas = allowed_tables, allowed_schemas
+                else:
+                    # R12: 同执行路径——scope off 仅跳过业务白名单，黑名单无条件生效。
+                    scope_tables, scope_schemas = None, None
                 scope = validate_query_scope(
                     sql,
-                    allowed_tables=allowed_tables,
-                    allowed_schemas=allowed_schemas,
+                    allowed_tables=scope_tables,
+                    allowed_schemas=scope_schemas,
                     blocked_tables=self.config.get('sql_blocked_tables'),
                     dialect=dialect,
                 )
@@ -1254,16 +1257,20 @@ class SQLGenerator:
                                 allowed_schemas: Optional[List[str]]) -> Optional[str]:
         if not self._is_safe_query(sql):
             return '仅允许执行符合长度限制的单条只读 SELECT 查询'
-        if not self.config.get('sql_scope_enforcement', True):
-            return None
-        if allowed_tables is None:
-            schema_rows = self.db_client.get_table_schema()
-            allowed_tables = [
-                row.get('table_name') for row in schema_rows if row.get('table_name')
-            ]
-        if allowed_schemas is None:
-            database = getattr(self.db_client, 'database', None)
-            allowed_schemas = [database] if database else []
+        if self.config.get('sql_scope_enforcement', True):
+            if allowed_tables is None:
+                schema_rows = self.db_client.get_table_schema()
+                allowed_tables = [
+                    row.get('table_name') for row in schema_rows if row.get('table_name')
+                ]
+            if allowed_schemas is None:
+                database = getattr(self.db_client, 'database', None)
+                allowed_schemas = [database] if database else []
+        else:
+            # R12: 开关仅放宽业务表 scope（任意业务表放行）；应用表内建黑名单与
+            # 系统 schema 防护无条件生效，内部表保护绝不依赖该开关。
+            allowed_tables = None
+            allowed_schemas = None
         scope = validate_query_scope(
             sql,
             allowed_tables=allowed_tables,

@@ -254,3 +254,87 @@ def test_execute_sql_app_table_blocked_even_with_explicit_allowlist(client):
     assert result["status"] == "error"
     assert "禁止访问内部表" in result["error"]
     assert result["data"] is None
+
+
+# ============ R12: 应用表黑名单无条件生效（独立于 SQL_SCOPE_ENFORCEMENT） ============
+
+@pytest.mark.parametrize("table", _APP_TABLES)
+@pytest.mark.parametrize("variant", ["plain", "upper", "main", "allowlist"])
+def test_app_tables_blocked_with_scope_enforcement_off(client, table, variant):
+    """R12：scope 开关关闭时应用表仍必须被拒（明文/大写/main. 限定/显式放行）。"""
+    generator = _make_generator(client, config={"sql_scope_enforcement": False})
+    kwargs = {}
+    if variant == "plain":
+        sql = f"SELECT * FROM {table}"
+    elif variant == "upper":
+        sql = f"SELECT * FROM {table.upper()}"
+    elif variant == "main":
+        sql = f"SELECT * FROM main.{table}"
+    else:
+        sql = f"SELECT * FROM {table}"
+        kwargs = {"allowed_tables": [table], "allowed_schemas": ["main"]}
+    result = generator.execute_sql(sql, **kwargs)
+    assert result["status"] == "error"
+    assert "禁止访问内部表" in result["error"]
+    assert result["data"] is None
+
+
+def test_scope_enforcement_off_allows_business_tables(client):
+    """保留合法 scope-off 语义：业务表不受业务白名单限制（任意业务表放行）。"""
+    generator = _make_generator(client, config={"sql_scope_enforcement": False})
+    result = generator.execute_sql("SELECT * FROM users")
+    assert result["status"] == "success"
+    assert result["row_count"] == 12
+    # 未知表不再被业务白名单拒绝（legacy 放宽语义）；存在性仍由执行层兜底。
+    assert generator._get_query_safety_error("SELECT * FROM unknown_biz", None, None) is None
+
+
+def test_scope_enforcement_on_behavior_unchanged(client):
+    generator = _make_generator(client, config={"sql_scope_enforcement": True})
+    assert generator._get_query_safety_error("SELECT * FROM users", None, None) is None
+    error = generator._get_query_safety_error("SELECT * FROM unknown_biz", None, None)
+    assert error and "表不在允许范围内" in error
+    result = generator.execute_sql("SELECT * FROM user_feedback")
+    assert result["status"] == "error"
+    assert "禁止访问内部表" in result["error"]
+
+
+def test_scope_off_cannot_exfiltrate_app_table_rows(client):
+    """R12 真实数据探针：哨兵行在 scope off/on 下均不可被读出。"""
+    client.execute_update(
+        "INSERT INTO knowledge_metadata (node_id, node_type, node_label, description) "
+        "VALUES (:node_id, :node_type, :node_label, :description)",
+        {"node_id": "sentinel-r12", "node_type": "table",
+         "node_label": "R12_SENTINEL", "description": "r12-exfil-probe"},
+    )
+    for enforcement in (False, True):
+        generator = _make_generator(
+            client, config={"sql_scope_enforcement": enforcement}
+        )
+        result = generator.execute_sql("SELECT * FROM knowledge_metadata")
+        assert result["status"] == "error", enforcement
+        assert "禁止访问内部表" in result["error"]
+        assert result["data"] is None
+
+
+def test_scope_off_still_blocks_system_schemas(client):
+    generator = _make_generator(client, config={"sql_scope_enforcement": False})
+    error = generator._get_query_safety_error(
+        "SELECT * FROM information_schema.tables", None, None
+    )
+    assert error and "系统 Schema" in error
+
+
+def test_generation_validation_scope_off_still_flags_app_tables(client):
+    """R12 同源加固：生成期校验黑名单同样无条件生效，业务表校验不受影响。"""
+    generator = _make_generator(client, config={"sql_scope_enforcement": False})
+    app_result = generator._validate_generation_result(
+        {"status": "success", "sql": "SELECT * FROM knowledge_metadata"},
+        dialect="sqlite",
+    )
+    assert app_result["validation"]["valid"] is False
+    assert any("禁止访问内部表" in e for e in app_result["validation"]["errors"])
+    biz_result = generator._validate_generation_result(
+        {"status": "success", "sql": "SELECT * FROM users"}, dialect="sqlite"
+    )
+    assert biz_result["validation"]["valid"] is True
