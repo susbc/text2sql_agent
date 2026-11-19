@@ -1775,7 +1775,7 @@ def test_application_history_loader_keeps_governance_off_compatibility():
     context._load_few_shot_history()
 
     context._db_client.get_successful_history_for_few_shot.assert_called_once_with(
-        limit=100
+        limit=100, dialect="sqlite"
     )
     context._knowledge_retriever.build_few_shot_index.assert_called_once_with([])
 

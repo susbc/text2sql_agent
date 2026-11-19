@@ -1170,6 +1170,7 @@ class SQLiteClient:
         self,
         limit: int = 100,
         *,
+        dialect: Optional[str] = None,
         semantic_datasource: Optional[str] = None,
         semantic_dialect: Optional[str] = None,
         semantic_version: Optional[str] = None,
@@ -1181,6 +1182,9 @@ class SQLiteClient:
 
         Args:
             limit: 限制数量
+            dialect: 按 sql_dialect 过滤（spec §5.4）：legacy 路径传当前生成方言，
+                迁移旧行（mysql）不注入 SQLite 提示；None 保持旧行为（不过滤）。
+                治理路径沿用 governance_validated + semantic_* 身份过滤，不传本参数。
 
         Returns:
             List[Dict]: 成功历史记录列表
@@ -1227,6 +1231,9 @@ class SQLiteClient:
                     "governance_validated": True,
                 }
             )
+        if dialect is not None:
+            conditions.append("sql_dialect = :dialect")
+            params["dialect"] = dialect
         where_clause = " AND ".join(conditions)
         query = f"""
         SELECT id, user_query, generated_sql, validation_status, execution_status,

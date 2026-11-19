@@ -520,7 +520,9 @@ def test_generator_factory_loads_only_fully_successful_history_for_few_shot():
         Mock(), neo4j, mysql, config={"few_shot_enabled": True}
     )
 
-    mysql.get_successful_history_for_few_shot.assert_called_once_with(limit=100)
+    mysql.get_successful_history_for_few_shot.assert_called_once_with(
+        limit=100, dialect="sqlite"
+    )
     mysql.get_history_list.assert_not_called()
     assert [record["id"] for record in generator.knowledge_retriever.history_records] == [7]
 

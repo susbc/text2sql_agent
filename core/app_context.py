@@ -845,6 +845,7 @@ class ApplicationContext:
             elif self._db_client and self._db_client.engine:
                 records = self._db_client.get_successful_history_for_few_shot(
                     limit=100,
+                    dialect=config.get('sql_dialect', 'sqlite'),
                 )
                 retriever.build_few_shot_index(records)
 
@@ -924,6 +925,7 @@ class ApplicationContext:
         try:
             records = self._db_client.get_successful_history_for_few_shot(
                 limit=100,
+                dialect=self._config.get('sql_dialect', 'sqlite'),
             )
             self._knowledge_retriever.build_few_shot_index(records)
         except Exception as e:

@@ -1392,6 +1392,7 @@ def create_sql_generator(
             else:
                 history_records = db_client.get_successful_history_for_few_shot(
                     limit=100,
+                    dialect=config.get('sql_dialect', 'sqlite'),
                 )
                 knowledge_retriever.build_few_shot_index(history_records)
             logger.info(f"Few-Shot 索引构建完成，共 {len(knowledge_retriever.history_records)} 条成功记录")
