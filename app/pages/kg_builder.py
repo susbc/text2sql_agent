@@ -225,26 +225,43 @@ def render_graph_builder():
 
         st.warning("""
         **注意事项**
-        - 需要提供数据库连接 URI
-        - 将读取 INFORMATION_SCHEMA 获取元数据
-        - 当前活体抽取支持 MySQL；其他方言可通过 DDL/JSON 文件导入
+        - SQLite（默认）：提供数据库文件路径，读取 sqlite_master/PRAGMA 抽取业务表（排除应用存储表）
+        - MySQL：提供连接信息，读取 INFORMATION_SCHEMA 获取元数据
+        - 其他方言可通过 DDL/JSON 文件导入
         """)
 
         col1, col2 = st.columns(2)
         with col1:
-            db_type = st.selectbox("数据库类型", ["mysql"], index=0)
+            db_type = st.selectbox("数据库类型", ["sqlite", "mysql"], index=0)
             schema_name = st.text_input("Schema/数据库名", value="")
         with col2:
-            db_host = st.text_input("主机", value="localhost")
-            db_port = st.text_input("端口", value="3306")
+            if db_type == "sqlite":
+                db_file = st.text_input(
+                    "SQLite 文件路径", value=str(project_root / "data" / "text2sql.db")
+                )
+            else:
+                db_host = st.text_input("主机", value="localhost")
+                db_port = st.text_input("端口", value="3306")
 
-        db_user = st.text_input("用户名", value="root")
-        db_password = st.text_input("密码", type="password", value="")
+        if db_type == "mysql":
+            db_user = st.text_input("用户名", value="root")
+            db_password = st.text_input("密码", type="password", value="")
 
         enable_ai_db = st.checkbox("启用 AI 增强", value=True, key="ai_db")
 
         if st.button("连接并构建", type="primary", use_container_width=True, key="build_db"):
-            if not db_host or not db_user:
+            db_uri = None
+            if db_type == "sqlite":
+                raw_path = (db_file or "").strip()
+                if not raw_path:
+                    st.warning("请填写 SQLite 数据库文件路径")
+                else:
+                    # 相对路径按项目根解析；sqlite:/// + 绝对路径
+                    db_path = Path(raw_path).expanduser()
+                    if not db_path.is_absolute():
+                        db_path = project_root / db_path
+                    db_uri = f"sqlite:///{db_path}"
+            elif not db_host or not db_user:
                 st.warning("请填写完整的数据库连接信息")
             else:
                 # 构建连接 URI（对用户名和密码进行 URL 编码，防止特殊字符破坏 URI 解析）
@@ -255,6 +272,7 @@ def render_graph_builder():
                 else:
                     db_uri = f"{db_type}://{safe_user}:{safe_password}@{db_host}:{db_port}/{schema_name}"
 
+            if db_uri:
                 try:
                     with st.spinner("正在连接数据库并构建知识图谱..."):
                         progress_bar = st.progress(0)

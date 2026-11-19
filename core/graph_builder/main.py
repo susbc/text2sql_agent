@@ -25,7 +25,7 @@ class GraphBuilderPipeline:
         self.result: Optional[SchemaExtractResult] = None
         logger.info(f"流水线初始化 - LLM: {llm_provider}/{llm_model}")
 
-    def extract_from_db(self, db_uri: str, db_type: str = "mysql",
+    def extract_from_db(self, db_uri: str, db_type: str = "sqlite",
                         schema: Optional[str] = None) -> SchemaExtractResult:
         extractor = LiveDBExtractor(db_uri=db_uri, db_type=db_type, schema=schema)
         try:

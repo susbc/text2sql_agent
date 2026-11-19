@@ -4,7 +4,9 @@
 import sys
 import os
 import json
+import sqlite3
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,8 +17,36 @@ from loguru import logger
 from config import NEO4J_ENABLED, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
 from core.knowledge.neo4j_client import Neo4jClient
 from core.graph_builder import run_pipeline, GraphBuilderPipeline
+from core.graph_builder.extractors.live_db_extractor import LiveDBExtractor
 from core.graph_builder.extractors.offline_extractor import OfflineExtractor
 from core.graph_builder.extractors.offline_json_extractor import OfflineJSONExtractor
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SEED_BUSINESS = PROJECT_ROOT / "data" / "seed_business.sql"
+SEED_HISTORY = PROJECT_ROOT / "data" / "seed_history.sql"
+
+# 与 core/history/sqlite_client._APP_TABLES / live_db_extractor._APP_TABLES 对齐
+APP_TABLES = {
+    "knowledge_metadata", "table_schema", "column_schema",
+    "sql_generation_history", "retrieval_terms", "user_feedback",
+}
+BUSINESS_TABLES = {
+    "users", "transaction_record", "user_account", "risk_blacklist",
+    "prediction_results", "account_freeze_log", "daily_account_check",
+    "fee_rate_config",
+}
+
+
+def _seed_sqlite_file(db_path: Path, extra_ddl: str = ""):
+    """用种子文件初始化临时 SQLite 库（业务 8 表 + 应用 6 表，供排除断言）。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(SEED_BUSINESS.read_text(encoding="utf-8"))
+        conn.executescript(SEED_HISTORY.read_text(encoding="utf-8"))
+        if extra_ddl:
+            conn.executescript(extra_ddl)
+    finally:
+        conn.close()
 
 # 配置日志
 logger.remove()
@@ -262,6 +292,238 @@ def test_full_pipeline_with_neo4j():
     finally:
         if ddl_path.exists():
             ddl_path.unlink()
+
+
+def test_live_extract_sqlite(tmp_path):
+    """活体抽取 SQLite：db_type='sqlite'，仅业务表（排除 6 应用表），列元数据正确。"""
+    db_path = tmp_path / "text2sql.db"
+    _seed_sqlite_file(db_path)
+
+    extractor = LiveDBExtractor(db_uri=f"sqlite:///{db_path}", db_type="sqlite")
+    try:
+        result = extractor.extract()
+    finally:
+        extractor.close()
+
+    assert result.metadata["source_type"] == "live_db"
+    assert len(result.databases) == 1
+    db = result.databases[0]
+    assert db.db_type == "sqlite"
+    assert db.name == "main"
+
+    names = {t.name for t in result.tables}
+    assert {"users", "risk_blacklist"} <= names
+    assert names == BUSINESS_TABLES
+    assert not (names & APP_TABLES)
+    assert all(t.database == "main" for t in result.tables)
+
+    users = next(t for t in result.tables if t.name == "users")
+    cols = {c.name: c for c in users.columns}
+    assert cols["user_id"].is_primary_key is True
+    assert cols["user_id"].is_nullable is False
+    assert cols["user_id"].data_type == "INTEGER"
+    assert cols["rfm_score"].data_type == "REAL"
+    assert cols["event_date"].data_type == "TEXT"
+
+    # INTEGER PRIMARY KEY AUTOINCREMENT：PRAGMA notnull=0 但主键语义不可空
+    account = next(t for t in result.tables if t.name == "user_account")
+    account_cols = {c.name: c for c in account.columns}
+    assert account_cols["id"].is_primary_key is True
+    assert account_cols["id"].is_nullable is False
+    assert account_cols["remark"].is_nullable is True
+
+    # 命名启发式关系（与 MySQL 路径一致）：user_account.user_id → users
+    assert len(result.relationships) == 1
+    rel = result.relationships[0]
+    assert (rel.from_table, rel.from_column, rel.to_table, rel.to_column) == (
+        "user_account", "user_id", "users", "user_id"
+    )
+
+
+def test_live_extract_sqlite_schema_override(tmp_path):
+    """显式 schema 名覆盖默认的 main（DatabaseIR 与 TableIR 一致）。"""
+    db_path = tmp_path / "named.db"
+    _seed_sqlite_file(db_path)
+
+    extractor = LiveDBExtractor(db_uri=f"sqlite:///{db_path}", db_type="sqlite", schema="business_db")
+    try:
+        result = extractor.extract()
+    finally:
+        extractor.close()
+
+    assert result.databases[0].name == "business_db"
+    assert all(t.database == "business_db" for t in result.tables)
+
+
+def test_live_extract_sqlite_fk_relationships(tmp_path):
+    """声明外键优先成为关系；与启发式去重；指向应用表的外键被排除。"""
+    db_path = tmp_path / "fk.db"
+    _seed_sqlite_file(db_path, extra_ddl="""
+        CREATE TABLE probe_child (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            remark TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        );
+        CREATE TABLE probe_pk_ref (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users
+        );
+        CREATE TABLE probe_app_ref (
+            id INTEGER PRIMARY KEY,
+            history_id INTEGER,
+            FOREIGN KEY (history_id) REFERENCES sql_generation_history (id)
+        );
+    """)
+
+    extractor = LiveDBExtractor(db_uri=f"sqlite:///{db_path}", db_type="sqlite")
+    try:
+        result = extractor.extract()
+    finally:
+        extractor.close()
+
+    rels = {
+        (r.from_table, r.from_column, r.to_table, r.to_column)
+        for r in result.relationships
+    }
+    assert ("probe_child", "user_id", "users", "user_id") in rels
+    # 省略被引用列的 FK 回退到对方主键
+    assert ("probe_pk_ref", "user_id", "users", "user_id") in rels
+    # 指向应用表的外键不建模
+    assert not any(r.from_table == "probe_app_ref" for r in result.relationships)
+    # FK 与启发式推断去重：同一 (from_table, from_column) 只保留一条
+    assert sum(1 for r in result.relationships if r.from_table == "probe_child") == 1
+    assert sum(
+        1 for r in result.relationships
+        if r.from_table == "user_account" and r.from_column == "user_id"
+    ) == 1
+
+
+def test_live_extract_sqlite_excludes_uppercase_app_tables(tmp_path):
+    """SQLite 标识符大小写不敏感：大写应用表同样被排除，大写业务表正常抽取。"""
+    db_path = tmp_path / "case.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(SEED_BUSINESS.read_text(encoding="utf-8"))
+        conn.executescript("""
+            CREATE TABLE SQL_GENERATION_HISTORY (id INTEGER PRIMARY KEY, user_query TEXT);
+            CREATE TABLE EXTRA_BIZ (id INTEGER PRIMARY KEY, note TEXT);
+        """)
+    finally:
+        conn.close()
+
+    extractor = LiveDBExtractor(db_uri=f"sqlite:///{db_path}", db_type="sqlite")
+    try:
+        result = extractor.extract()
+    finally:
+        extractor.close()
+
+    names = {t.name for t in result.tables}
+    assert "SQL_GENERATION_HISTORY" not in names
+    assert names == BUSINESS_TABLES | {"EXTRA_BIZ"}
+
+
+def test_live_extract_sqlite_missing_file(tmp_path):
+    """缺文件直接报错，只读抽取不得静默创建空库文件。"""
+    missing = tmp_path / "nope.db"
+    extractor = LiveDBExtractor(db_uri=f"sqlite:///{missing}", db_type="sqlite")
+    with pytest.raises(FileNotFoundError, match="不存在"):
+        extractor.extract()
+    assert not missing.exists()
+
+
+def test_live_extract_unsupported_db_type():
+    """mysql/sqlite 之外的方言仍拒绝（离线 DDL/JSON 通道不变）。"""
+    extractor = LiveDBExtractor(db_uri="oracle://unused", db_type="oracle")
+    with pytest.raises(ValueError, match="暂不支持"):
+        extractor.extract()
+
+
+def test_live_extract_mysql_path_intact():
+    """MySQL 活体抽取路径保持可用（Task 8 前不移除）：mock INFORMATION_SCHEMA。"""
+    table_rows = [
+        ("users", "用户表", "business_db"),
+        ("risk_blacklist", "黑名单", "business_db"),
+    ]
+    column_rows = [
+        ("user_id", "bigint(20)", "用户ID", "NO", "PRI", "users"),
+        ("name", "varchar(64)", "姓名", "YES", "", "users"),
+        ("id", "bigint(20)", "", "NO", "PRI", "risk_blacklist"),
+        ("user_id", "bigint(20)", "用户ID", "YES", "", "risk_blacklist"),
+    ]
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        result = MagicMock()
+        if "SELECT DATABASE()" in sql:
+            result.scalar.return_value = "business_db"
+        elif "INFORMATION_SCHEMA.TABLES" in sql:
+            result.fetchall.return_value = table_rows
+        elif "INFORMATION_SCHEMA.COLUMNS" in sql:
+            result.fetchall.return_value = column_rows
+        return result
+
+    conn = MagicMock()
+    conn.execute.side_effect = fake_execute
+    engine = MagicMock()
+    engine.connect.return_value.__enter__.return_value = conn
+
+    extractor = LiveDBExtractor(
+        db_uri="mysql+mysqlconnector://user:pass@localhost:3306/business_db",
+        db_type="mysql",
+    )
+    extractor.engine = engine  # 跳过真实连接
+    result = extractor.extract()
+
+    assert result.databases[0].db_type == "mysql"
+    assert {t.name for t in result.tables} == {"users", "risk_blacklist"}
+    users = next(t for t in result.tables if t.name == "users")
+    cols = {c.name: c for c in users.columns}
+    assert cols["user_id"].data_type == "bigint"
+    assert cols["user_id"].is_primary_key is True
+    assert cols["user_id"].is_nullable is False
+    assert cols["name"].is_nullable is True
+    assert users.description == "用户表"
+    # 启发式关系：risk_blacklist.user_id → users
+    assert any(
+        (r.from_table, r.from_column, r.to_table) == ("risk_blacklist", "user_id", "users")
+        for r in result.relationships
+    )
+
+
+def test_extract_from_db_default_sqlite(tmp_path):
+    """流水线 extract_from_db 默认 db_type 已切到 sqlite（不显式传参）。"""
+    db_path = tmp_path / "default.db"
+    _seed_sqlite_file(db_path)
+
+    pipeline = GraphBuilderPipeline()
+    result = pipeline.extract_from_db(db_uri=f"sqlite:///{db_path}")
+
+    assert result.databases[0].db_type == "sqlite"
+    assert {t.name for t in result.tables} == BUSINESS_TABLES
+
+
+def test_neo4j_database_metadata_reflects_sqlite():
+    """R3 运行时已将 Database.db_type 外科式更新为 sqlite；此处为可选活体核实。
+
+    默认跳过（单测不依赖活体 Neo4j）；TEXT2SQL_RUN_DB_TESTS=1 且 NEO4J_ENABLED=true
+    时核实迁移后的元数据状态。
+    """
+    if os.getenv("TEXT2SQL_RUN_DB_TESTS") != "1" or not NEO4J_ENABLED:
+        pytest.skip("设置 TEXT2SQL_RUN_DB_TESTS=1 且 NEO4J_ENABLED=true 后运行真实 Neo4j 核实")
+
+    client = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    assert client.connect()
+    try:
+        rows = client.execute_query(
+            "MATCH (d:Database) RETURN d.name AS name, d.db_type AS db_type",
+            raise_on_error=True,
+        )
+        assert rows, "Neo4j 中应存在 Database 节点"
+        assert all(r["db_type"] == "sqlite" for r in rows)
+    finally:
+        client.close()
 
 
 def main():
