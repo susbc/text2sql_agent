@@ -109,8 +109,8 @@ class SQLDialectDetector:
             logger.info(f"使用默认数据库：{default_db['name']} ({default_db['db_type']})")
             return default_db["db_type"], default_db["database_id"]
 
-        logger.warning("未检测到数据库，返回默认 mysql")
-        return "mysql", None
+        logger.warning("未检测到数据库，返回默认 sqlite")
+        return "sqlite", None
 
     def get_database_info(self, database_id: Optional[int] = None) -> Optional[Dict]:
         """

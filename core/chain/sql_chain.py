@@ -17,7 +17,7 @@ from .prompts import SemanticPromptBudgetError, get_prompt_templates
 class SQLGenerationChain:
     """SQL 生成链 - 整合检索、提示词、LLM 调用"""
 
-    def __init__(self, llm: BaseChatModel, dialect: str = "mysql",
+    def __init__(self, llm: BaseChatModel, dialect: str = "sqlite",
                  retrieval_top_k: int = 5, prompt_max_length: int = 4000):
         """
         初始化 SQL 生成链

@@ -93,10 +93,12 @@ SQL_VALIDATION_ENABLED = parse_env_bool("SQL_VALIDATION_ENABLED", True)
 SQL_QUERY_MAX_ROWS = parse_env_int("SQL_QUERY_MAX_ROWS", 500)
 SQL_QUERY_TIMEOUT_MS = parse_env_int("SQL_QUERY_TIMEOUT_MS", 10_000)
 SQL_SCOPE_ENFORCEMENT = parse_env_bool("SQL_SCOPE_ENFORCEMENT", True)
+# 默认禁查全部 6 应用表（spec §5.3，与 validator.DEFAULT_BLOCKED_TABLES 对齐）。
 SQL_BLOCKED_TABLES = [
     value.strip() for value in os.getenv(
         "SQL_BLOCKED_TABLES",
-        "sql_generation_history,user_feedback,table_schema,column_schema",
+        "knowledge_metadata,table_schema,column_schema,"
+        "sql_generation_history,retrieval_terms,user_feedback",
     ).split(',') if value.strip()
 ]
 

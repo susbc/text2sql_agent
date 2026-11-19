@@ -124,7 +124,7 @@ class SQLGenerator:
             return target_dialect, target_database_id
         if self.dialect_detector:
             return self.dialect_detector.detect_from_query(user_query)
-        return self.config.get('sql_dialect', 'mysql'), None
+        return self.config.get('sql_dialect', 'sqlite'), None
 
     def _validate_governed_dialect(self, dialect: Any) -> str:
         if self.correctness_pipeline is None:
@@ -1319,7 +1319,7 @@ class SQLGenerator:
         """检测用户查询的目标数据库方言"""
         if self.dialect_detector:
             return self.dialect_detector.detect_from_query(user_query)
-        return self.config.get('sql_dialect', 'mysql'), None
+        return self.config.get('sql_dialect', 'sqlite'), None
 
 
 def create_sql_generator(
@@ -1356,7 +1356,7 @@ def create_sql_generator(
     # 3. 创建 SQL 生成链
     sql_chain = SQLGenerationChain(
         llm=llm,
-        dialect=config.get('sql_dialect', 'mysql'),
+        dialect=config.get('sql_dialect', 'sqlite'),
         retrieval_top_k=config.get('retrieval_top_k', 5),
         prompt_max_length=config.get('prompt_max_length', 4000),
     )

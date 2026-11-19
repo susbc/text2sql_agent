@@ -11,8 +11,11 @@ from sqlfluff.core.errors import SQLParseError
 from ..utils.log_sanitizer import log_safe_exception
 
 SYSTEM_SCHEMAS = {"information_schema", "mysql", "performance_schema", "sys", "pg_catalog"}
+# 6 应用表全量禁查（spec §5.3）：内建黑名单与调用方 blocked_tables 合并生效，
+# 即便 allowed_tables 误放/绕过，生成 SQL 也读不到应用表（defense-in-depth）。
 DEFAULT_BLOCKED_TABLES = {
-    "sql_generation_history", "user_feedback", "table_schema", "column_schema"
+    "knowledge_metadata", "table_schema", "column_schema",
+    "sql_generation_history", "retrieval_terms", "user_feedback",
 }
 
 
