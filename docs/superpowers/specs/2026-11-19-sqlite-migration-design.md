@@ -17,14 +17,14 @@ MySQL 当前三职责（同处 business_db 库）：
 3. 执行目标：生成 SQL 经 execute_sql→mysql_client.execute_query_limited 在
    business_db 执行；字段校验查 MySQL 表结构 + allowed_schemas。
 
-业务表 8 张共 31 行：users(12)/transaction_record(8)/user_account(6)/
+业务表 8 张共 30 行：users(12)/transaction_record(8)/user_account(6)/
 risk_blacklist(3)/prediction_results(1)/account_freeze_log/daily_account_check/
 fee_rate_config(0)。客户端基于 SQLAlchemy（mysql+mysqlconnector+QueuePool）。
 
 ## 2. 用户已决策
 
 - 范围：彻底去 MySQL（存储+元数据+执行全迁 SQLite）。
-- 数据来源：迁移现有 MySQL 数据（业务结构+31 行、历史 50 行）→ SQLite 种子入库；
+- 数据来源：迁移现有 MySQL 数据（业务结构+30 行、历史 50 行）→ SQLite 种子入库；
   授权只读 introspect（已完成）。
 - 持久化：嵌入式 SQLite 文件（非内存），重启不丢。
 - **语义治理（Q2）**：内核保持 mysql-only，SQLite 模式下不可用（默认本就关闭）；
@@ -45,7 +45,7 @@ A（选定）：drop-in SQLiteClient 沿用 MySQLClient ~20 公开方法签名�
 **目标**
 - 去 MySQL 服务依赖：应用存储+业务数据/执行落到单文件 data/text2sql.db（应用表+
   业务表同库，忠实当前布局）。
-- 迁移数据行数对账一致（业务 31、历史 50）。
+- 迁移数据行数对账一致（业务 30、历史 50）。
 - 默认 SQLite；生成 SQL 在 SQLite 业务库端到端可执行；Neo4j Database 元数据＝sqlite。
 - config MYSQL_*→SQLITE_PATH；去池参数；env.example/schema.sql/requirements
   （去 mysql-connector-python，留 SQLAlchemy）同步。
@@ -91,9 +91,9 @@ A（选定）：drop-in SQLiteClient 沿用 MySQLClient ~20 公开方法签名�
 
 ### 5.2 数据迁移（scripts/migrate_mysql_to_sqlite.py + 种子）
 - 只读连源 MySQL（.env），introspect 14 表结构+数据。
-- 生成入库种子：data/seed_business.sql（8 业务表 DDL+31 行）+ 历史迁移（50 行）。
+- 生成入库种子：data/seed_business.sql（8 业务表 DDL+30 行）+ 历史迁移（50 行）。
 - SQLiteClient.connect() 库不存在→种子幂等初始化。
-- 行数对账：逐表 COUNT==源（业务 31、历史 50）。
+- 行数对账：逐表 COUNT==源（业务 30、历史 50）。
 - **时序（Q5）**：先迁移（源 MySQL 在跑、已授权）→验证→再移除 mysql-connector。
 
 ### 5.3 方言 / 执行 / 安全边界
@@ -141,7 +141,7 @@ A（选定）：drop-in SQLiteClient 沿用 MySQLClient ~20 公开方法签名�
 
 ## 6. 验证计划
 1. 基线 938/14（迁移前）。
-2. 迁移对账：逐表 COUNT==源（业务 31、历史 50）。
+2. 迁移对账：逐表 COUNT==源（业务 30、历史 50）。
 3. 全量测试绿（既有+新增）；ruff 零。
 4. 端到端冒烟（8502）：自然语言→生成 SQLite SQL→执行返回业务数据（"查询黑名单
    用户"→risk_blacklist 3 行）→历史落 SQLite；应用表查询被安全边界拒绝。

@@ -14,7 +14,7 @@
 
 - 基线：当前 main `.venv/bin/python -m pytest tests -q` → **938 passed, 14 skipped, 0 failed**；ruff check . 零告警。每任务结束跑全量，既有覆盖不丢（适配而非删除测试）。
 - 彻底去 MySQL：完成后 requirements 无 mysql-connector-python，代码无 mysql 服务连接残留（mysql_client.py 删除）。
-- 迁移数据保真：逐表行数对账==源（业务 8 表 31 行、历史 50 行）；DECIMAL→NUMERIC 浮点亲和接受，对账以行数为准。
+- 迁移数据保真：逐表行数对账==源（业务 8 表 30 行、历史 50 行）；DECIMAL→NUMERIC 浮点亲和接受，对账以行数为准。
 - 安全边界：get_table_schema 仅返回业务表；6 张应用表（knowledge_metadata/table_schema/column_schema/sql_generation_history/retrieval_terms/user_feedback）入 SQL_BLOCKED_TABLES；生成 SQL 不得查应用表。
 - 语义治理/EXPLAIN 内核保持 mysql-only（Literal["mysql"] pin、default.yaml、golden、config_validation 闸门不动）；SQLite 下休眠，UI 注明仅 MySQL。不扩展内核。
 - Neo4j 检索链路结构/算法不动；仅 Database 节点 db_type 随实际配置库更新为 sqlite。
@@ -38,7 +38,7 @@
 ### Task 1: 迁移脚本 + 种子文件 + 行数对账
 
 **Files:**
-- Create: `scripts/migrate_mysql_to_sqlite.py`、`data/seed_business.sql`（8 业务表 DDL+31 行）、`data/seed_history.sql`（6 应用表 DDL+50 行历史）、`tests/test_migration_reconciliation.py`
+- Create: `scripts/migrate_mysql_to_sqlite.py`、`data/seed_business.sql`（8 业务表 DDL+30 行）、`data/seed_history.sql`（6 应用表 DDL+50 行历史）、`tests/test_migration_reconciliation.py`
 - 源：只读连 MySQL business_db（.env）
 
 **Interfaces:**
@@ -47,7 +47,7 @@
 
 - [ ] **Step 1: 写迁移脚本**
 
-只读 introspect 源 MySQL 14 表（sqlalchemy inspect）；按 spec §5.1 类型映射生成 SQLite DDL（INTEGER PRIMARY KEY AUTOINCREMENT、TEXT/NUMERIC/INTEGER、去 COLLATE/ENGINE）；导出业务表 31 行 + sql_generation_history 50 行为 INSERT（参数化/转义）；写 data/seed_business.sql + data/seed_history.sql。脚本打印逐表行数。
+只读 introspect 源 MySQL 14 表（sqlalchemy inspect）；按 spec §5.1 类型映射生成 SQLite DDL（INTEGER PRIMARY KEY AUTOINCREMENT、TEXT/NUMERIC/INTEGER、去 COLLATE/ENGINE）；导出业务表 30 行 + sql_generation_history 50 行为 INSERT（参数化/转义）；写 data/seed_business.sql + data/seed_history.sql。脚本打印逐表行数。
 
 - [ ] **Step 2: 写对账测试（先失败）**
 
