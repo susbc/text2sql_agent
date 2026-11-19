@@ -8,28 +8,37 @@ SQLite 数据库客户端（MySQLClient 的 drop-in 替代）
   避免池化连接残留 progress_handler/interrupt 状态；:memory: 用 StaticPool 保持单连接。
   每连接 PRAGMA foreign_keys=ON（user_feedback→history 的 ON DELETE CASCADE 依赖它）。
 - 初始化：6 应用表 DDL 内联幂等创建（逐字镜像 data/seed_history.sql 的 canonical DDL，
-  索引名按表命名空间化）。种子仅在 fresh 初始化加载：seed_history.sql 要求空库
-  （无任何表），seed_business.sql 要求 8 业务表全缺——显式 id INSERT 对已填充库重放
-  会主键冲突，故严格门控（spec §5.2）。
+  索引名按表命名空间化）。种子加载**原子**（complete_statement 切分 + 事务内逐句执行，
+  失败整体回滚）＋**收敛完成门**（history 空/缺→重种子，业务表全缺→重种子；
+  PRAGMA user_version 完成标记防已初始化库重放）——中途失败重试必收敛 50/30（spec §5.2）。
+- 事务：pysqlite 驱动默认隔离级别会绕过事务 DDL；connect 事件置 isolation_level=None
+  并由 SQLAlchemy begin 事件显式 BEGIN（官方 transactional-DDL recipe），DDL/DML 同事务。
 - 超时看门狗（Q4）：SQLite 无 MAX_EXECUTION_TIME hint；execute_query_limited 用
-  threading.Timer 调 Connection.interrupt + progress_handler 双保险实现 timeout_ms。
-  默认预算惰性读取 config.SQL_QUERY_TIMEOUT_MS（不改构造签名），失败回退 10s。
+  threading.Timer 调 Connection.interrupt + progress_handler 双保险实现 timeout_ms；
+  仅精确匹配 sqlite3.OperationalError("interrupted") 才转超时异常；fire_lock+active
+  标志杜绝 Timer 迟发射 interrupt 污染后续语句。默认预算惰性读取
+  config.SQL_QUERY_TIMEOUT_MS（不改构造签名），失败回退 10s。
+- :memory:（StaticPool 单共享连接）：per-client RLock 序列化全部 DB 访问，防并发死锁；
+  文件库 NullPool 保持并发 checkout 不受影响。
 - database 属性＝"main"（SQLite 真实 schema 名；spec §5.3 allowed_schemas 按 main 处理）。
 - get_table_schema/get_column_schema 改查 sqlite_master + PRAGMA table_info，仅返回
-  业务表（排除 6 应用表），供安全边界（Task 4）；返回键形与 MySQLClient 对齐。
+  业务表（排除 6 应用表，**大小写归一**——SQLite 标识符 ASCII 大小写不敏感），
+  供安全边界（Task 4）；返回键形与 MySQLClient 对齐。
 - ON UPDATE CURRENT_TIMESTAMP 已去除：所有应用 UPDATE 显式置 updated_at（行为不变）。
 """
 import json
 import re
+import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from threading import Timer
+from threading import Lock, RLock, Timer
 from time import monotonic
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from sqlalchemy.exc import OperationalError as SQLAlchemyOperationalError
 from sqlalchemy.pool import NullPool, StaticPool
 from sqlglot import exp, parse_one
@@ -71,6 +80,8 @@ _BUSINESS_TABLES = frozenset(
 )
 _SEED_DIR = Path(__file__).resolve().parents[2] / "data"
 _DEFAULT_QUERY_TIMEOUT_MS = 10_000
+# 种子完成标记（PRAGMA user_version）：已初始化库跳过重种子；全 wipe 库按状态门重新收敛。
+_SEED_VERSION = 1
 
 # 应用表幂等建表语句：逐字镜像 data/seed_history.sql 的 canonical DDL（Task 1 report §3）。
 # sql_dialect 新行默认 'sqlite'；索引名按表命名空间化。
@@ -198,12 +209,51 @@ class QueryTimeoutExceeded(TimeoutError):
 
 
 def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
-    """每个新建 DBAPI 连接开启外键（SQLite 默认关闭，须每连接设置）。"""
+    """每个新建 DBAPI 连接：开启外键 + 置 DBAPI autocommit（SQLAlchemy 显式驱动 BEGIN）。
+
+    isolation_level=None 关闭 pysqlite 隐式事务（否则 DDL 自动提交、无法整体回滚），
+    配合 _begin_transaction 实现事务 DDL（SQLAlchemy 官方 pysqlite recipe）。
+    PRAGMA foreign_keys 须在事务外设置，connect 事件时机满足。
+    """
+    dbapi_connection.isolation_level = None
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
+
+
+def _begin_transaction(conn) -> None:
+    """SQLAlchemy begin 事件：显式 BEGIN（DBAPI autocommit 下由 SQLAlchemy 掌控事务）。"""
+    conn.exec_driver_sql("BEGIN")
+
+
+def _has_sql_content(statement: str) -> bool:
+    """判断语句是否含可执行内容（仅用于跳过纯注释片段；不改动执行文本）。"""
+    return bool(re.sub(r"--[^\n]*", "", statement).strip())
+
+
+def _split_sql_script(script: str) -> List[str]:
+    """用 sqlite3.complete_statement 正确切分多语句 SQL 脚本。
+
+    SQLite 自身 tokenizer 判定语句完整性：字符串内分号（种子 id=35）、转义引号
+    （id=25 ''R3''）、注释均正确处理。前导注释随其后的语句一并保留（SQLite 可执行）；
+    纯注释/空白片段跳过。切分结果经事务内逐句执行实现原子加载（替代 executescript
+    的逐句自动提交）。
+    """
+    statements: List[str] = []
+    buffer = ""
+    for line in script.splitlines(keepends=True):
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            statement = buffer.strip()
+            buffer = ""
+            if statement and _has_sql_content(statement):
+                statements.append(statement)
+    tail = buffer.strip()
+    if tail and _has_sql_content(tail):
+        statements.append(tail)
+    return statements
 
 
 class SQLiteClient:
@@ -229,6 +279,10 @@ class SQLiteClient:
         )
         self._governance_proof_verifier = governance_proof_verifier
         self.engine = None
+        # :memory: StaticPool 单共享连接 + check_same_thread=False 并发会死锁：
+        # per-client RLock 序列化全部 DB 访问（可重入：connect 内部复用 get_connection）。
+        # 文件库 NullPool 每次 checkout 独立连接，无需序列化（保持并发）。
+        self._access_lock = RLock() if self.path == ":memory:" else None
 
     def connect(self) -> bool:
         """
@@ -238,38 +292,44 @@ class SQLiteClient:
             bool: 连接是否成功
         """
         try:
-            if self.engine is not None:
-                self.engine.dispose()
-            memory = self.path == ":memory:"
-            if memory:
-                db_url = "sqlite://"
-                poolclass = StaticPool
-            else:
-                path = Path(self.path).expanduser().resolve()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                db_url = f"sqlite:///{path}"
-                poolclass = NullPool
-            self.engine = create_engine(
-                db_url,
-                connect_args={"check_same_thread": False},
-                poolclass=poolclass,
-                echo=False,
-            )
-            event.listen(self.engine, "connect", _enable_foreign_keys)
-            # 验证连接，并在任何 DDL 之前快照已有表（种子门控依据）。
-            with self.engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-                existing_tables = {
-                    row[0]
-                    for row in conn.execute(
-                        text("SELECT name FROM sqlite_master WHERE type='table'")
-                    )
-                }
-            self._ensure_app_tables()
-            self._migrate_history_schema()
-            self._migrate_table_schema()
-            self._ensure_app_indexes()
-            self._load_seeds(existing_tables=existing_tables)
+            with self._access_lock or nullcontext():
+                if self.engine is not None:
+                    self.engine.dispose()
+                memory = self.path == ":memory:"
+                if memory:
+                    db_url = "sqlite://"
+                    poolclass = StaticPool
+                else:
+                    path = Path(self.path).expanduser().resolve()
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    db_url = f"sqlite:///{path}"
+                    poolclass = NullPool
+                self.engine = create_engine(
+                    db_url,
+                    connect_args={"check_same_thread": False},
+                    poolclass=poolclass,
+                    echo=False,
+                )
+                event.listen(self.engine, "connect", _enable_foreign_keys)
+                event.listen(self.engine, "begin", _begin_transaction)
+                # 验证连接，并在任何 DDL 之前快照已有表（种子门控依据）。
+                # 过滤 sqlite_% 内部表（如 sqlite_sequence）：全 wipe 库正确判为 fresh。
+                with self.engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                    existing_tables = {
+                        row[0]
+                        for row in conn.execute(
+                            text(
+                                "SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                            )
+                        )
+                    }
+                self._ensure_app_tables()
+                self._migrate_history_schema()
+                self._migrate_table_schema()
+                self._ensure_app_indexes()
+                self._load_seeds(existing_tables=existing_tables)
             logger.info(
                 "SQLite 初始化成功：path_id={}, database={}",
                 text_fingerprint(self.path),
@@ -300,30 +360,84 @@ class SQLiteClient:
             self.execute_update(statement, raise_on_error=True)
 
     def _load_seeds(self, *, existing_tables: set) -> None:
-        """fresh-init-only 种子加载（显式 id INSERT 不可对已填充库重放）。
+        """原子种子加载 + 收敛完成门（显式 id INSERT 不可对已填充表重放）。
 
-        - seed_history.sql：仅空库（初始化前无任何表）加载，忠实迁移 50 行历史。
-        - seed_business.sql：仅 8 业务表全缺时加载（覆盖空库与仅有应用表的库）；
-          部分业务表已存在则整体跳过，避免显式 id 主键冲突。
+        状态门（大小写归一）：
+        - seed_history.sql：history 表缺/空 → 加载（原子成功后 50 行）。中途失败整体
+          回滚 → 重试时仍空 → 重种子，必收敛（修复存在性门永不重种子的缺陷）。
+        - seed_business.sql：8 业务表全缺 → 加载；部分已存在则整体跳过（避免 PK 冲突）。
+        完成标记（PRAGMA user_version）：两维度均满足且种子文件齐备 → 置标记；
+        已标记库快速跳过，但**全 wipe**（history 空且业务表全缺）按状态门重新收敛。
+        标记亦防止已初始化库被刻意清空 history 后重放旧种子。
         """
-        if not existing_tables:
+        normalized = {name.lower() for name in existing_tables}
+        history_rows = self._history_count()
+        business_present = bool(normalized & _BUSINESS_TABLES)
+        version_rows = self.execute_query("PRAGMA user_version", raise_on_error=True)
+        version = version_rows[0].get("user_version", 0) if version_rows else 0
+        if version >= _SEED_VERSION and (history_rows > 0 or business_present):
+            return
+
+        history_seed = _SEED_DIR / "seed_history.sql"
+        business_seed = _SEED_DIR / "seed_business.sql"
+        history_ready = history_rows > 0
+        business_ready = business_present
+        if not history_ready and history_seed.is_file():
             self._execute_seed_file(
-                _SEED_DIR / "seed_history.sql", stage="sqlite_seed_history"
+                history_seed,
+                stage="sqlite_seed_history",
+                populated=lambda: self._history_count() > 0,
             )
-        if not (existing_tables & _BUSINESS_TABLES):
+            history_ready = True
+        if not business_ready and business_seed.is_file():
             self._execute_seed_file(
-                _SEED_DIR / "seed_business.sql", stage="sqlite_seed_business"
+                business_seed,
+                stage="sqlite_seed_business",
+                populated=self._business_tables_present,
+            )
+            business_ready = True
+        if (
+            history_ready and business_ready
+            and history_seed.is_file() and business_seed.is_file()
+        ):
+            self.execute_update(
+                f"PRAGMA user_version = {_SEED_VERSION}", raise_on_error=True
             )
 
-    def _execute_seed_file(self, seed_path: Path, *, stage: str) -> None:
+    def _history_count(self) -> int:
+        rows = self.execute_query(
+            "SELECT COUNT(*) AS n FROM sql_generation_history", raise_on_error=True
+        )
+        return rows[0]["n"] if rows else 0
+
+    def _business_tables_present(self) -> bool:
+        rows = self.execute_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+        return bool({row["name"].lower() for row in rows} & _BUSINESS_TABLES)
+
+    def _execute_seed_file(self, seed_path: Path, *, stage: str, populated) -> None:
+        """事务内逐句执行种子脚本：中途失败整体回滚（含 DDL），重试 pristine 重种子。
+
+        并发首 init：原子加载下 PK 冲突只能来自并发赢家的**完整**提交——校验目标
+        确已填充后容忍（类比 _is_duplicate_schema_change）；否则原样抛出（fail-closed）。
+        """
         if not seed_path.is_file():
             logger.warning("种子文件缺失，跳过初始化：stage={}", stage)
             return
         script = seed_path.read_text(encoding="utf-8")
-        with self.get_connection() as conn:
-            # executescript 用 SQLite 自身解析器处理多语句脚本（含字符串内分号）。
-            dbapi_connection = conn.connection.dbapi_connection
-            dbapi_connection.executescript(script)
+        statements = _split_sql_script(script)
+        try:
+            with self.get_connection() as conn:
+                for statement in statements:
+                    # exec_driver_sql 直达 DBAPI：不做 :name 绑定参数解析（种子字面量安全）。
+                    conn.exec_driver_sql(statement)
+        except SQLAlchemyIntegrityError as exc:
+            if not populated():
+                raise
+            log_safe_exception(stage, exc, level="warning")
+            logger.info("种子并发初始化冲突，视为已由并发启动完成：stage={}", stage)
+            return
         logger.info("种子初始化完成：stage={}", stage)
 
     def _migrate_history_schema(self) -> None:
@@ -410,15 +524,19 @@ class SQLiteClient:
 
     def close(self):
         """关闭引擎（NullPool 下归还连接即关闭，dispose 释放引擎资源）"""
-        if self.engine:
-            self.engine.dispose()
-            self.engine = None
-            logger.info("SQLite 引擎已关闭")
+        with self._access_lock or nullcontext():
+            if self.engine:
+                self.engine.dispose()
+                self.engine = None
+                logger.info("SQLite 引擎已关闭")
 
     @contextmanager
     def get_connection(self):
         """
         获取数据库连接（上下文管理器）
+
+        :memory: StaticPool 下 per-client RLock 序列化整个事务窗口（含 yield），
+        杜绝单共享连接的并发死锁；文件库 NullPool 无锁（nullcontext）。
 
         Yields:
             SQLAlchemy Connection
@@ -427,21 +545,22 @@ class SQLiteClient:
             logger.error("SQLite 未连接")
             raise RuntimeError("SQLite 未连接")
 
-        conn = self.engine.connect()
-        try:
-            yield conn
-            conn.commit()
-        except Exception as exc:
-            log_safe_exception("sqlite_transaction", exc)
+        with self._access_lock or nullcontext():
+            conn = self.engine.connect()
             try:
-                conn.rollback()
-            except Exception as rollback_exc:
-                log_safe_exception(
-                    "sqlite_transaction_rollback", rollback_exc, level="warning"
-                )
-            raise
-        finally:
-            conn.close()
+                yield conn
+                conn.commit()
+            except Exception as exc:
+                log_safe_exception("sqlite_transaction", exc)
+                try:
+                    conn.rollback()
+                except Exception as rollback_exc:
+                    log_safe_exception(
+                        "sqlite_transaction_rollback", rollback_exc, level="warning"
+                    )
+                raise
+            finally:
+                conn.close()
 
     def execute_query(self, query: str, params: Optional[dict] = None,
                       raise_on_error: bool = False) -> List[Dict]:
@@ -482,7 +601,18 @@ class SQLiteClient:
         with self.get_connection() as conn:
             dbapi_connection = conn.connection.dbapi_connection
             deadline = monotonic() + budget_ms / 1000
-            watchdog = Timer(budget_ms / 1000, dbapi_connection.interrupt)
+            # 迟发射竞态守卫：cancel() 止不了已启动的 Timer 回调；active 标志与
+            # interrupt() 同锁，finally 持锁置 inactive → 归还连接后绝不再发射。
+            fire_lock = Lock()
+            active = True
+
+            def _fire() -> None:
+                nonlocal active
+                with fire_lock:
+                    if active:
+                        dbapi_connection.interrupt()
+
+            watchdog = Timer(budget_ms / 1000, _fire)
             watchdog.daemon = True
             dbapi_connection.set_progress_handler(
                 lambda: 1 if monotonic() >= deadline else 0, 1000
@@ -492,13 +622,17 @@ class SQLiteClient:
                 result = conn.execute(text(query), params or {})
                 rows = result.mappings().fetchmany(max_rows + 1)
             except SQLAlchemyOperationalError as exc:
-                message = str(getattr(exc, "orig", exc)).lower()
-                if "interrupt" in message:
+                # 精确匹配真实取消消息（探针证实恰为 "interrupted"）；
+                # 含 'interrupt' 的真实 SQL 错误（interrupt_log/interrupt()）不得误转超时。
+                orig = getattr(exc, "orig", None)
+                if isinstance(orig, sqlite3.OperationalError) and str(orig) == "interrupted":
                     raise QueryTimeoutExceeded(
                         f"查询执行超过 {budget_ms}ms 超时预算，已被看门狗取消"
                     ) from exc
                 raise
             finally:
+                with fire_lock:
+                    active = False
                 watchdog.cancel()
                 dbapi_connection.set_progress_handler(None, 0)
             truncated = len(rows) > max_rows
@@ -536,24 +670,25 @@ class SQLiteClient:
             raise RuntimeError("SQLite 未连接")
 
         def execute(cancelled) -> List[Dict]:
-            conn = self.engine.connect()
-            try:
-                if cancelled.is_set():
-                    raise ExplainDeadlineExceeded("EXPLAIN deadline exceeded")
-                result = conn.execute(text(explain_sql))
-                rows = [dict(row._mapping) for row in result]
-                if cancelled.is_set():
-                    raise ExplainDeadlineExceeded("EXPLAIN deadline exceeded")
-                return rows
-            finally:
-                if cancelled.is_set():
-                    try:
-                        conn.invalidate()
-                    except Exception as exc:
-                        log_safe_exception(
-                            "sqlite_explain_invalidate", exc, level="warning"
-                        )
-                conn.close()
+            with self._access_lock or nullcontext():
+                conn = self.engine.connect()
+                try:
+                    if cancelled.is_set():
+                        raise ExplainDeadlineExceeded("EXPLAIN deadline exceeded")
+                    result = conn.execute(text(explain_sql))
+                    rows = [dict(row._mapping) for row in result]
+                    if cancelled.is_set():
+                        raise ExplainDeadlineExceeded("EXPLAIN deadline exceeded")
+                    return rows
+                finally:
+                    if cancelled.is_set():
+                        try:
+                            conn.invalidate()
+                        except Exception as exc:
+                            log_safe_exception(
+                                "sqlite_explain_invalidate", exc, level="warning"
+                            )
+                    conn.close()
 
         return run_with_wall_clock_deadline(execute, timeout_ms)
 
@@ -1138,9 +1273,12 @@ class SQLiteClient:
             "SELECT name FROM sqlite_master "
             "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         )
-        names = [row["name"] for row in rows if row["name"] not in _APP_TABLES]
+        # SQLite 表标识符 ASCII 大小写不敏感：排除/查找均归一化，
+        # 杜绝大写 SQL_GENERATION_HISTORY 绕过应用表边界。
+        names = [row["name"] for row in rows if row["name"].lower() not in _APP_TABLES]
         if table_name:
-            names = [name for name in names if name == table_name]
+            wanted = table_name.lower()
+            names = [name for name in names if name.lower() == wanted]
         schemas = []
         for name in names:
             columns = self._pragma_table_info(name)
@@ -1160,11 +1298,13 @@ class SQLiteClient:
 
     def get_column_schema(self, table_name: str) -> List[Dict]:
         """
-        获取字段信息（仅业务表；应用表/不存在表返回 []，与 get_table_schema 边界一致）。
+        获取字段信息（仅业务表；应用表/不存在表返回 []，与 get_table_schema 边界一致，
+        大小写归一——大写应用表名同样被排除）。
 
         PRAGMA table_info → MySQL 注册表键形：column_name/column_type/is_nullable/
-        is_primary_key/column_comment/default_value/table_name；id 取列 ordinal（cid），
-        table_id/时间戳无注册表对应物恒 None。按 cid 序（对应 MySQL ORDER BY cs.id）。
+        is_primary_key/column_comment/default_value/table_name（canonical 存储名）；
+        id 取列 ordinal（cid），table_id/时间戳无注册表对应物恒 None。
+        按 cid 序（对应 MySQL ORDER BY cs.id）。
 
         Args:
             table_name: 表名
@@ -1172,15 +1312,18 @@ class SQLiteClient:
         Returns:
             List[Dict]: 字段信息
         """
-        if not table_name or table_name in _APP_TABLES:
+        if not table_name or table_name.lower() in _APP_TABLES:
             return []
+        # COLLATE NOCASE：大小写不敏感查找（SQLite 标识符语义）；返回 canonical 存储名。
         exists = self.execute_query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name = :name",
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name = :name COLLATE NOCASE",
             {"name": table_name},
         )
         if not exists:
             return []
-        columns = self._pragma_table_info(table_name)
+        actual_name = exists[0]["name"]
+        columns = self._pragma_table_info(actual_name)
         return [
             {
                 "id": column["cid"],
@@ -1193,7 +1336,7 @@ class SQLiteClient:
                 "default_value": column["dflt_value"],
                 "created_at": None,
                 "updated_at": None,
-                "table_name": table_name,
+                "table_name": actual_name,
             }
             for column in columns
         ]

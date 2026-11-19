@@ -151,7 +151,7 @@ def test_connect_is_idempotent_on_populated_db(db_path):
 
 
 def test_connect_existing_db_never_replays_seeds(db_path):
-    # 预置一个仅含业务表 users（1 行）的旧库：种子不得重放
+    # 预置一个仅含业务表 users（1 行）的旧库：业务种子不得重放
     raw = sqlite3.connect(db_path)
     raw.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY, note TEXT)")
     raw.execute("INSERT INTO users (user_id, note) VALUES (1, 'legacy')")
@@ -162,11 +162,22 @@ def test_connect_existing_db_never_replays_seeds(db_path):
     assert instance.connect() is True
     try:
         assert _count(instance, "users") == 1  # 未被种子覆盖/追加
-        assert _count(instance, "sql_generation_history") == 0  # 历史种子未重放
+        # 收敛门：history 表此前不存在（空）→ 首次历史种子（非重放）；业务表已存在→跳过
+        assert _count(instance, "sql_generation_history") == _SEED_HISTORY_ROWS
         assert _APP_TABLES <= _table_names(instance)  # 应用表仍幂等补齐
         assert not (_BUSINESS_TABLES - {"users"}) & _table_names(instance)
     finally:
         instance.close()
+
+    # 完成标记后重连：任何种子均不再加载
+    again = SQLiteClient(db_path)
+    assert again.connect() is True
+    try:
+        assert _count(again, "users") == 1
+        assert _count(again, "sql_generation_history") == _SEED_HISTORY_ROWS
+        assert again.execute_query("PRAGMA user_version")[0]["user_version"] == 1
+    finally:
+        again.close()
 
 
 def test_connect_migrates_legacy_schema(db_path):
@@ -684,3 +695,248 @@ def test_foreign_keys_enforced_and_cascade(client):
         "DELETE FROM sql_generation_history WHERE id = :hid", {"hid": history_id}
     )
     assert _count(client, "user_feedback") == 0
+
+
+# ==================== fix round 1 回归 ====================
+
+def test_f1_app_table_exclusion_and_lookup_case_insensitive(db_path):
+    """大写 SQL_GENERATION_HISTORY 不得绕过应用表边界；业务表查找大小写不敏感。"""
+    raw = sqlite3.connect(db_path)
+    raw.execute(
+        """
+        CREATE TABLE SQL_GENERATION_HISTORY (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            user_query TEXT NOT NULL,
+            generated_sql TEXT,
+            sql_dialect TEXT DEFAULT 'sqlite',
+            semantic_datasource TEXT,
+            semantic_dialect TEXT,
+            semantic_version TEXT,
+            semantic_content_sha256 TEXT,
+            governance_validated INTEGER NOT NULL DEFAULT 0,
+            validation_status TEXT DEFAULT 'pending',
+            validation_error TEXT,
+            execution_status TEXT DEFAULT 'pending',
+            execution_error TEXT,
+            execution_result TEXT,
+            matched_knowledge TEXT,
+            retrieval_query TEXT,
+            feedback_score INTEGER,
+            feedback_comment TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO SQL_GENERATION_HISTORY (user_query) VALUES ('audit-secret')"
+    )
+    raw.commit()
+    raw.close()
+
+    instance = SQLiteClient(db_path)
+    assert instance.connect() is True
+    try:
+        names = {row["table_name"].lower() for row in instance.get_table_schema()}
+        assert "sql_generation_history" not in names
+        assert "users" in names
+        assert instance.get_column_schema("SQL_GENERATION_HISTORY") == []
+        assert instance.get_column_schema("sql_generation_history") == []
+        # 业务表大小写不敏感查找（返回 canonical 存储名）
+        assert [r["table_name"] for r in instance.get_table_schema("USERS")] == ["users"]
+        columns = instance.get_column_schema("USERS")
+        assert columns[0]["column_name"] == "user_id"
+        assert columns[0]["table_name"] == "users"
+    finally:
+        instance.close()
+
+
+def test_f1_seed_gate_normalizes_business_case(db_path):
+    raw = sqlite3.connect(db_path)
+    raw.execute("CREATE TABLE USERS (user_id INTEGER PRIMARY KEY, note TEXT)")
+    raw.execute("INSERT INTO USERS (user_id, note) VALUES (1, 'legacy')")
+    raw.commit()
+    raw.close()
+    instance = SQLiteClient(db_path)
+    assert instance.connect() is True
+    try:
+        assert _count(instance, "USERS") == 1  # 大写业务表被识别 → 种子不重放
+        assert not (_BUSINESS_TABLES - {"users"}) & {
+            name.lower() for name in _table_names(instance)
+        }
+    finally:
+        instance.close()
+
+
+def test_f2_mid_seed_failure_rolls_back_and_retry_converges(db_path, monkeypatch):
+    """种子中途失败 → 整体回滚（含 DDL）→ 重试收敛 50/30（完成门不以存在性判完成）。"""
+    import core.history.sqlite_client as mod
+
+    original_split = mod._split_sql_script
+    poisoned = {"done": False}
+
+    def failing_split(script):
+        statements = original_split(script)
+        if not poisoned["done"]:
+            poisoned["done"] = True
+            statements.insert(len(statements) // 2, "INSERT INTO no_such_table VALUES (1)")
+        return statements
+
+    monkeypatch.setattr(mod, "_split_sql_script", failing_split)
+    instance = SQLiteClient(db_path)
+    assert instance.connect() is False  # 中途失败 → fail-closed
+
+    raw = sqlite3.connect(db_path)
+    try:
+        # 原子回滚：history 0 行、业务表未建、完成标记未置
+        assert raw.execute("SELECT COUNT(*) FROM sql_generation_history").fetchone()[0] == 0
+        tables = {
+            r[0].lower()
+            for r in raw.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        assert not (tables & _BUSINESS_TABLES)
+        assert raw.execute("PRAGMA user_version").fetchone()[0] == 0
+    finally:
+        raw.close()
+
+    monkeypatch.undo()
+    retry = SQLiteClient(db_path)
+    assert retry.connect() is True
+    try:
+        assert _count(retry, "sql_generation_history") == _SEED_HISTORY_ROWS
+        assert sum(_count(retry, t) for t in _BUSINESS_TABLES) == 30
+        assert retry.execute_query("PRAGMA user_version")[0]["user_version"] == 1
+    finally:
+        retry.close()
+
+
+def test_f2_wiped_db_with_internal_tables_reseeds(db_path):
+    """全 wipe 库仅剩 sqlite_sequence 内部表 → 过滤后判 fresh，重新收敛 50/30。"""
+    first = SQLiteClient(db_path)
+    assert first.connect() is True
+    first.close()
+
+    raw = sqlite3.connect(db_path)
+    for (name,) in raw.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall():
+        raw.execute(f'DROP TABLE "{name}"')
+    raw.commit()
+    remaining = [
+        r[0] for r in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]
+    assert remaining == ["sqlite_sequence"]  # 内部表残留
+    raw.close()
+
+    second = SQLiteClient(db_path)
+    assert second.connect() is True
+    try:
+        assert _count(second, "sql_generation_history") == _SEED_HISTORY_ROWS
+        assert sum(_count(second, t) for t in _BUSINESS_TABLES) == 30
+    finally:
+        second.close()
+
+
+def test_f3_memory_client_serializes_concurrent_access():
+    """:memory: StaticPool 单共享连接：并发访问序列化，不死锁。"""
+    from threading import Thread
+
+    instance = SQLiteClient(":memory:")
+    assert instance.connect() is True
+    results = []
+    errors = []
+
+    def worker_a():
+        try:
+            rows, _truncated = instance.execute_query_limited(
+                "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt "
+                "WHERE x < 2000000) SELECT COUNT(*) AS n FROM cnt",
+                max_rows=1,
+                timeout_ms=10000,
+            )
+            results.append(("a", rows[0]["n"]))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(("a", exc))
+
+    def worker_b():
+        try:
+            # 与审查探针同场景：两线程并发 execute_query_limited 共享单连接
+            rows, _truncated = instance.execute_query_limited(
+                "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt "
+                "WHERE x < 2000000) SELECT COUNT(*) AS n FROM cnt",
+                max_rows=1,
+                timeout_ms=10000,
+            )
+            results.append(("b", rows[0]["n"]))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(("b", exc))
+
+    thread_a = Thread(target=worker_a, daemon=True)
+    thread_b = Thread(target=worker_b, daemon=True)
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(20)
+    thread_b.join(20)
+    try:
+        assert not thread_a.is_alive() and not thread_b.is_alive()  # 死锁则仍存活
+        assert not errors
+        assert dict(results) == {"a": 2000000, "b": 2000000}
+    finally:
+        # 死锁回归时 close() 会阻塞于被占用的 RLock → 仅在无线程存活时清理
+        if not thread_a.is_alive() and not thread_b.is_alive():
+            instance.close()
+
+
+def test_f3_memory_watchdog_timeout_then_connection_reuse():
+    """:memory: 看门狗超时后 StaticPool 复用同一连接仍健康（handler 重置/无迟发射）。"""
+    instance = SQLiteClient(":memory:")
+    assert instance.connect() is True
+    try:
+        with pytest.raises(QueryTimeoutExceeded):
+            instance.execute_query_limited(_SLOW_CTE, max_rows=1, timeout_ms=50)
+        for _ in range(5):
+            assert instance.execute_query("SELECT 1 AS ok") == [{"ok": 1}]
+            assert _count(instance, "risk_blacklist") == 3
+    finally:
+        instance.close()
+
+
+def test_f4_non_timeout_interrupt_errors_not_converted(client):
+    """含 'interrupt' 的真实 SQL 错误保持原异常类型，不得误转 QueryTimeoutExceeded。"""
+    from sqlalchemy.exc import OperationalError as SAOperationalError
+
+    with pytest.raises(SAOperationalError) as table_err:
+        client.execute_query_limited(
+            "SELECT * FROM interrupt_log", max_rows=10, timeout_ms=5000
+        )
+    assert not isinstance(table_err.value, QueryTimeoutExceeded)
+    assert "no such table" in str(table_err.value.orig)
+
+    with pytest.raises(SAOperationalError) as func_err:
+        client.execute_query_limited(
+            "SELECT interrupt(1)", max_rows=10, timeout_ms=5000
+        )
+    assert not isinstance(func_err.value, QueryTimeoutExceeded)
+    assert "no such function" in str(func_err.value.orig)
+
+
+def test_prune_history_cascades_feedback(db_path):
+    """_prune_history 删除最旧历史行时，user_feedback 外键级联删除。"""
+    instance = SQLiteClient(db_path, history_max_records=_SEED_HISTORY_ROWS + 1)
+    assert instance.connect() is True
+    try:
+        # 种子最旧行 id=1（created_at 2026-03-21 18:36:51）挂反馈
+        assert instance.execute_update(
+            "INSERT INTO user_feedback (history_id, feedback_type) VALUES (1, 'like')"
+        ) == 1
+        instance.save_sql_history("q1", "SELECT 1")
+        instance.save_sql_history("q2", "SELECT 2")
+        # 52 行 → 保留最新 51 → 最旧 id=1 被 prune → 反馈级联消失
+        assert _count(instance, "sql_generation_history") == _SEED_HISTORY_ROWS + 1
+        assert instance.get_history_detail(1) is None
+        assert _count(instance, "user_feedback") == 0
+    finally:
+        instance.close()
