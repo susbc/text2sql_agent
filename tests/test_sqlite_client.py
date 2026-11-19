@@ -126,7 +126,7 @@ def test_connect_is_idempotent_on_populated_db(db_path):
 
 
 def test_connect_existing_db_never_replays_seeds(db_path):
-    # 预置一个仅含业务表 users（1 行）的旧库：业务种子不得重放
+    # 预置一个仅含业务表 users（1 行）的外部旧库：FIX-2 外部库保护 → 两个演示种子均跳过
     raw = sqlite3.connect(db_path)
     raw.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY, note TEXT)")
     raw.execute("INSERT INTO users (user_id, note) VALUES (1, 'legacy')")
@@ -137,20 +137,19 @@ def test_connect_existing_db_never_replays_seeds(db_path):
     assert instance.connect() is True
     try:
         assert _count(instance, "users") == 1  # 未被种子覆盖/追加
-        # 收敛门：history 表此前不存在（空）→ 首次历史种子（非重放）；业务表已存在→跳过
-        assert _count(instance, "sql_generation_history") == _SEED_HISTORY_ROWS
+        assert _count(instance, "sql_generation_history") == 0  # 不注入演示历史
         assert _APP_TABLES <= _table_names(instance)  # 应用表仍幂等补齐
         assert not (_BUSINESS_TABLES - {"users"}) & _table_names(instance)
     finally:
         instance.close()
 
-    # 完成标记后重连：任何种子均不再加载
+    # 重连稳定：外部库始终不播种，完成标记不置位
     again = SQLiteClient(db_path)
     assert again.connect() is True
     try:
         assert _count(again, "users") == 1
-        assert _count(again, "sql_generation_history") == _SEED_HISTORY_ROWS
-        assert again.execute_query("PRAGMA user_version")[0]["user_version"] == 1
+        assert _count(again, "sql_generation_history") == 0
+        assert again.execute_query("PRAGMA user_version")[0]["user_version"] == 0
     finally:
         again.close()
 
@@ -470,8 +469,9 @@ def test_get_history_list_filters_and_pagination(client):
 def test_get_statistics(client):
     stats = client.get_statistics()
     assert stats["total_history"] == _SEED_HISTORY_ROWS
-    assert stats["total_tables"] == 0
-    assert stats["total_columns"] == 0
+    # FIX-1：表数/列数来自真实业务表（8 表 102 列），不再计空注册表
+    assert stats["total_tables"] == len(_BUSINESS_TABLES)
+    assert stats["total_columns"] == 102
     assert stats["avg_feedback_score"] is None
     assert stats["success_rate"] is None or 0 <= stats["success_rate"] <= 100
 
@@ -481,8 +481,9 @@ def test_get_statistics(client):
     client.save_sql_history("q", "SELECT 1")
     stats = client.get_statistics()
     assert stats["total_history"] == _SEED_HISTORY_ROWS + 1
-    assert stats["total_tables"] == 1
-    assert stats["total_columns"] == 2
+    # 注册表写入不影响真实业务表计数
+    assert stats["total_tables"] == len(_BUSINESS_TABLES)
+    assert stats["total_columns"] == 102
 
 
 def test_explain_query_returns_query_plan_rows(client):
@@ -916,3 +917,191 @@ def test_prune_history_cascades_feedback(db_path):
         assert _count(instance, "user_feedback") == 0
     finally:
         instance.close()
+
+
+# ==================== Task 9 整支终审修复波 ====================
+
+def test_fix1_statistics_reflect_real_business_schema(client):
+    """FIX-1：表数/列数反映真实业务表（8/102），与 get_table_schema 边界一致。"""
+    stats = client.get_statistics()
+    assert stats["total_tables"] == 8
+    assert stats["total_columns"] == 102
+    # 与 get_table_schema 边界严格一致（排除应用表/内部表，大小写归一）
+    schemas = client.get_table_schema()
+    assert stats["total_tables"] == len(schemas)
+    assert stats["total_columns"] == sum(
+        len([c for c in row["columns"].split(",") if c]) for row in schemas
+    )
+    # 历史维度保持不变
+    assert stats["total_history"] == _SEED_HISTORY_ROWS
+    assert "success_rate" in stats and "avg_feedback_score" in stats
+
+
+def test_fix1_statistics_boundary_case_normalized(db_path):
+    """大写应用表不计入业务表数；外部用户表计入（与 get_table_schema 一致）。"""
+    raw = sqlite3.connect(db_path)
+    # 大写应用表须用 canonical 列（否则应用索引 DDL 因缺列 fail-closed，属预期冲突行为）
+    raw.execute(
+        """
+        CREATE TABLE USER_FEEDBACK (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            history_id INTEGER NOT NULL,
+            feedback_type TEXT NOT NULL,
+            feedback_content TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (history_id) REFERENCES sql_generation_history (id) ON DELETE CASCADE
+        )
+        """
+    )
+    raw.execute("CREATE TABLE my_external_data (id INTEGER PRIMARY KEY, v TEXT, w TEXT)")
+    raw.commit()
+    raw.close()
+    instance = SQLiteClient(db_path)
+    assert instance.connect() is True
+    try:
+        stats = instance.get_statistics()
+        names = {row["table_name"].lower() for row in instance.get_table_schema()}
+        assert "user_feedback" not in names
+        assert "my_external_data" in names
+        assert stats["total_tables"] == len(names)
+        assert stats["total_columns"] == sum(
+            len([c for c in row["columns"].split(",") if c])
+            for row in instance.get_table_schema()
+        )
+    finally:
+        instance.close()
+
+
+def test_fix2_external_db_not_polluted(db_path):
+    """FIX-2：SQLITE_PATH 指向外部既有库 → 不注入演示业务表/历史；应用表仍幂等补齐。"""
+    raw = sqlite3.connect(db_path)
+    raw.execute("CREATE TABLE my_own_data (id INTEGER PRIMARY KEY, value TEXT)")
+    raw.execute("INSERT INTO my_own_data (id, value) VALUES (1, 'private')")
+    raw.commit()
+    raw.close()
+
+    instance = SQLiteClient(db_path)
+    assert instance.connect() is True
+    try:
+        assert _count(instance, "my_own_data") == 1  # 用户数据完好
+        assert _count(instance, "sql_generation_history") == 0  # 无演示历史注入
+        assert not (_BUSINESS_TABLES & {n.lower() for n in _table_names(instance)})
+        assert _APP_TABLES <= _table_names(instance)  # 应用表仍创建（app 功能可用）
+        assert instance.execute_query("PRAGMA user_version")[0]["user_version"] == 0
+        # 重连稳定：始终不注入
+        assert instance.connect() is True
+        assert _count(instance, "sql_generation_history") == 0
+        assert not (_BUSINESS_TABLES & {n.lower() for n in _table_names(instance)})
+    finally:
+        instance.close()
+
+
+def test_fix2_app_own_pending_db_still_converges(db_path, monkeypatch):
+    """FIX-2 不回归 T2 原子收敛：app 自有库中途失败（快照仅应用表）重试仍 50/30。"""
+    import core.history.sqlite_client as mod
+
+    original_split = mod._split_sql_script
+    poisoned = {"done": False}
+
+    def failing_split(script):
+        statements = original_split(script)
+        if not poisoned["done"]:
+            poisoned["done"] = True
+            statements.insert(len(statements) // 2, "INSERT INTO no_such_table VALUES (1)")
+        return statements
+
+    monkeypatch.setattr(mod, "_split_sql_script", failing_split)
+    instance = SQLiteClient(db_path)
+    assert instance.connect() is False
+    monkeypatch.undo()
+
+    retry = SQLiteClient(db_path)
+    assert retry.connect() is True
+    try:
+        assert _count(retry, "sql_generation_history") == _SEED_HISTORY_ROWS
+        assert sum(_count(retry, t) for t in _BUSINESS_TABLES) == 30
+        assert retry.execute_query("PRAGMA user_version")[0]["user_version"] == 1
+    finally:
+        retry.close()
+
+
+def test_public_interface_signature_snapshot():
+    """19 公开方法签名冻结守卫（MySQLClient 移除后以静态快照延续 parity 不变量）。
+
+    比对参数名/类别/默认值（不含注解渲染）；任何公开接口变更须显式更新本快照。
+    """
+    import inspect
+
+    empty = inspect.Parameter.empty
+    pos = "POSITIONAL_OR_KEYWORD"
+    kw = "KEYWORD_ONLY"
+    expected = {
+        "connect": [],
+        "close": [],
+        "get_connection": [],
+        "execute_query": [
+            ("query", pos, empty), ("params", pos, None), ("raise_on_error", pos, False),
+        ],
+        "execute_query_limited": [
+            ("query", pos, empty), ("max_rows", pos, empty),
+            ("params", pos, None), ("timeout_ms", kw, None),
+        ],
+        "explain_query": [("query", pos, empty), ("timeout_ms", pos, empty)],
+        "execute_update": [
+            ("query", pos, empty), ("params", pos, None), ("raise_on_error", pos, False),
+        ],
+        "upsert_table_schema": [
+            ("table_name", pos, empty), ("table_comment", pos, ""), ("properties", pos, None),
+        ],
+        "upsert_column_schema": [
+            ("table_name", pos, empty), ("column_name", pos, empty),
+            ("column_type", pos, "VARCHAR"), ("column_comment", pos, ""),
+            ("is_nullable", pos, True), ("is_primary_key", pos, False),
+        ],
+        "save_sql_history": [
+            ("user_query", pos, empty), ("generated_sql", pos, empty),
+            ("session_id", pos, None), ("matched_knowledge", pos, None),
+            ("retrieval_query", pos, None), ("validation_status", pos, "pending"),
+            ("validation_error", pos, None),
+            ("semantic_datasource", kw, None), ("semantic_dialect", kw, None),
+            ("semantic_version", kw, None), ("semantic_content_sha256", kw, None),
+            ("governance_validated", kw, False),
+        ],
+        "save_governed_sql_history": [("command", pos, empty), ("proof", pos, empty)],
+        "finalize_governed_sql_execution": [("command", pos, empty), ("proof", pos, empty)],
+        "update_sql_execution": [
+            ("history_id", pos, empty), ("execution_status", pos, empty),
+            ("execution_error", pos, None), ("execution_result", pos, None),
+            ("session_id", pos, None), ("generated_sql", pos, None),
+            ("require_validation_success", pos, False),
+            ("expected_user_query", kw, None), ("expected_semantic_datasource", kw, None),
+            ("expected_semantic_dialect", kw, None), ("expected_semantic_version", kw, None),
+            ("expected_semantic_content_sha256", kw, None),
+            ("require_governance_validated", kw, False),
+        ],
+        "get_history_list": [
+            ("session_id", pos, None), ("limit", pos, 50),
+            ("offset", pos, 0), ("status_filter", pos, None),
+        ],
+        "get_successful_history_for_few_shot": [
+            ("limit", pos, 100), ("dialect", kw, None),
+            ("semantic_datasource", kw, None), ("semantic_dialect", kw, None),
+            ("semantic_version", kw, None), ("semantic_content_sha256", kw, None),
+            ("governance_validated", kw, None),
+        ],
+        "get_history_detail": [("history_id", pos, empty)],
+        "get_table_schema": [("table_name", pos, None)],
+        "get_column_schema": [("table_name", pos, empty)],
+        "get_statistics": [],
+    }
+    public = {
+        name
+        for name, member in vars(SQLiteClient).items()
+        if not name.startswith("_") and inspect.isfunction(member)
+    }
+    assert public == set(expected)
+    for name, shape in expected.items():
+        params = list(inspect.signature(getattr(SQLiteClient, name)).parameters.values())[1:]
+        actual = [(p.name, p.kind.name, p.default) for p in params]
+        assert actual == shape, f"公开方法签名漂移：{name}"
+    assert SQLiteClient.explain_query_enforces_wall_clock_deadline is True

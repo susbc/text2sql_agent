@@ -360,7 +360,12 @@ class SQLiteClient:
             self.execute_update(statement, raise_on_error=True)
 
     def _load_seeds(self, *, existing_tables: set) -> None:
-        """原子种子加载 + 收敛完成门（显式 id INSERT 不可对已填充表重放）。
+        """原子种子加载 + 收敛完成门 + 外部库保护（显式 id INSERT 不可对已填充表重放）。
+
+        外部库保护（Task 9 FIX-2）：pre-init 快照含**非应用用户表** → 外部既有库
+        （用户把 SQLITE_PATH 指向自有库）→ 跳过两个演示种子，绝不注入演示业务表/历史。
+        app 自有 fresh/pending 库快照为空或仅应用表（演示业务种子原子加载：要么 8 表
+        全在要么全缺），不触发本守卫，失败收敛不受影响。
 
         状态门（大小写归一）：
         - seed_history.sql：history 表缺/空 → 加载（原子成功后 50 行）。中途失败整体
@@ -376,6 +381,13 @@ class SQLiteClient:
         version_rows = self.execute_query("PRAGMA user_version", raise_on_error=True)
         version = version_rows[0].get("user_version", 0) if version_rows else 0
         if version >= _SEED_VERSION and (history_rows > 0 or business_present):
+            return
+        external_tables = normalized - _APP_TABLES
+        if external_tables:
+            logger.info(
+                "检测到外部既有库（含非应用表），跳过演示种子以防污染：external_table_count={}",
+                len(external_tables),
+            )
             return
 
         history_seed = _SEED_DIR / "seed_history.sql"
@@ -1355,7 +1367,13 @@ class SQLiteClient:
 
     def get_statistics(self) -> Dict:
         """
-        获取统计信息（合并为单次查询，减少数据库往返；SQLite 兼容直接 port）
+        获取统计信息。
+
+        total_history/success_rate/avg_feedback_score：单合并查询（减少往返）。
+        total_tables/total_columns：派生自 sqlite_master 真实业务表（复用
+        get_table_schema 边界：排除 6 应用表 + sqlite_% 内部表，大小写归一）——
+        迁移后注册表 table_schema/column_schema 已退化（0 行），不再是计数来源，
+        否则 UI 显示"表数:0"而实有 8 业务表 102 列（Task 9 FIX-1）。
 
         Returns:
             Dict: 统计数据
@@ -1367,18 +1385,21 @@ class SQLiteClient:
                         ELSE SUM(CASE WHEN execution_status = 'success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
                    END
                  FROM sql_generation_history WHERE execution_status != 'pending') AS success_rate,
-                (SELECT AVG(feedback_score) FROM sql_generation_history WHERE feedback_score IS NOT NULL) AS avg_feedback_score,
-                (SELECT COUNT(*) FROM table_schema) AS total_tables,
-                (SELECT COUNT(*) FROM column_schema) AS total_columns
+                (SELECT AVG(feedback_score) FROM sql_generation_history WHERE feedback_score IS NOT NULL) AS avg_feedback_score
         """
         results = self.execute_query(query)
         if results:
             row = results[0]
+            schemas = self.get_table_schema()
+            total_columns = sum(
+                len([name for name in schema["columns"].split(",") if name])
+                for schema in schemas
+            )
             return {
                 'total_history': row.get('total_history', 0),
                 'success_rate': row.get('success_rate'),
                 'avg_feedback_score': row.get('avg_feedback_score'),
-                'total_tables': row.get('total_tables', 0),
-                'total_columns': row.get('total_columns', 0),
+                'total_tables': len(schemas),
+                'total_columns': total_columns,
             }
         return {}
