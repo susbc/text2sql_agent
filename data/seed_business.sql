@@ -24,8 +24,8 @@ CREATE TABLE IF NOT EXISTS account_freeze_log (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT uk_freeze_no UNIQUE (freeze_no)
 );
-CREATE INDEX IF NOT EXISTS idx_account_no ON account_freeze_log (account_no);
-CREATE INDEX IF NOT EXISTS idx_freeze_status ON account_freeze_log (freeze_status);
+CREATE INDEX IF NOT EXISTS account_freeze_log_idx_account_no ON account_freeze_log (account_no);
+CREATE INDEX IF NOT EXISTS account_freeze_log_idx_freeze_status ON account_freeze_log (freeze_status);
 
 -- ------------------------------------------------------------
 -- daily_account_check — 日终渠道资金对账表（0 行）
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS daily_account_check (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT uk_date_channel UNIQUE (check_date, channel_code)
 );
-CREATE INDEX IF NOT EXISTS idx_check_status ON daily_account_check (check_status);
+CREATE INDEX IF NOT EXISTS daily_account_check_idx_check_status ON daily_account_check (check_status);
 
 -- ------------------------------------------------------------
 -- fee_rate_config — 金融手续费费率配置表（0 行）
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS fee_rate_config (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT uk_config_code UNIQUE (config_code)
 );
-CREATE INDEX IF NOT EXISTS idx_trans_scene ON fee_rate_config (trans_scene);
+CREATE INDEX IF NOT EXISTS fee_rate_config_idx_trans_scene ON fee_rate_config (trans_scene);
 
 -- ------------------------------------------------------------
 -- prediction_results（1 行）
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS risk_blacklist (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT uk_target_type_id UNIQUE (target_id, target_type)
 );
-CREATE INDEX IF NOT EXISTS idx_risk_level ON risk_blacklist (risk_level);
+CREATE INDEX IF NOT EXISTS risk_blacklist_idx_risk_level ON risk_blacklist (risk_level);
 INSERT INTO risk_blacklist (id, target_id, target_type, risk_level, block_scene, block_reason, expire_time, create_operator, create_time, update_time, is_deleted) VALUES (1, 'U10004', 1, 3, '全部交易', '反洗钱监测：多笔快进快出交易，命中监管预警模型', NULL, '风控系统', '2026-10-29 17:49:03', '2026-10-29 17:49:03', 0);
 INSERT INTO risk_blacklist (id, target_id, target_type, risk_level, block_scene, block_reason, expire_time, create_operator, create_time, update_time, is_deleted) VALUES (2, '6222020000001002', 2, 2, '提现', '疑似套现：同一商户高频大额提现', NULL, '风控系统', '2026-10-29 17:49:03', '2026-10-29 17:49:03', 0);
 INSERT INTO risk_blacklist (id, target_id, target_type, risk_level, block_scene, block_reason, expire_time, create_operator, create_time, update_time, is_deleted) VALUES (3, '203.0.113.66', 3, 1, '转账', '异常登录 IP，多次密码尝试失败', '2026-12-31 23:59:59', '运营后台', '2026-10-29 17:49:03', '2026-10-29 17:49:03', 0);
@@ -135,10 +135,10 @@ CREATE TABLE IF NOT EXISTS transaction_record (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT uk_trans_no UNIQUE (trans_no)
 );
-CREATE INDEX IF NOT EXISTS idx_account_no ON transaction_record (account_no);
-CREATE INDEX IF NOT EXISTS idx_create_time ON transaction_record (create_time);
-CREATE INDEX IF NOT EXISTS idx_order_batch_no ON transaction_record (order_batch_no);
-CREATE INDEX IF NOT EXISTS idx_trans_status ON transaction_record (trans_status);
+CREATE INDEX IF NOT EXISTS transaction_record_idx_account_no ON transaction_record (account_no);
+CREATE INDEX IF NOT EXISTS transaction_record_idx_create_time ON transaction_record (create_time);
+CREATE INDEX IF NOT EXISTS transaction_record_idx_order_batch_no ON transaction_record (order_batch_no);
+CREATE INDEX IF NOT EXISTS transaction_record_idx_trans_status ON transaction_record (trans_status);
 INSERT INTO transaction_record (id, trans_no, out_trans_no, account_no, opposite_account_no, trans_type, trans_amount, fee_amount, actual_amount, balance_after, trans_status, pay_channel, currency_code, order_batch_no, risk_verify_result, trans_desc, create_time, update_time, is_deleted) VALUES (1, 'T202610200001', NULL, '6222020000001001', NULL, 1, 5000.0000, 0.0000, 5000.0000, 30800.5000, 2, 'alipay', 'CNY', NULL, 1, '充值', '2026-10-29 17:49:03', '2026-10-29 17:49:03', 0);
 INSERT INTO transaction_record (id, trans_no, out_trans_no, account_no, opposite_account_no, trans_type, trans_amount, fee_amount, actual_amount, balance_after, trans_status, pay_channel, currency_code, order_batch_no, risk_verify_result, trans_desc, create_time, update_time, is_deleted) VALUES (2, 'T202610200002', NULL, '6222020000001001', '6222020000001005', 3, 1200.0000, 1.2000, 1198.8000, 29601.7000, 2, 'alipay', 'CNY', NULL, 1, '转账支出', '2026-10-29 17:49:03', '2026-10-29 17:49:03', 0);
 INSERT INTO transaction_record (id, trans_no, out_trans_no, account_no, opposite_account_no, trans_type, trans_amount, fee_amount, actual_amount, balance_after, trans_status, pay_channel, currency_code, order_batch_no, risk_verify_result, trans_desc, create_time, update_time, is_deleted) VALUES (3, 'T202610210003', NULL, '6222020000001003', NULL, 2, 80000.0000, 80.0000, 79920.0000, 899920.0000, 2, 'unionpay', 'CNY', NULL, 1, '提现', '2026-10-29 17:49:03', '2026-10-29 17:49:03', 0);
@@ -171,8 +171,8 @@ CREATE TABLE IF NOT EXISTS user_account (
     CONSTRAINT uk_account_no UNIQUE (account_no),
     CONSTRAINT uk_user_id UNIQUE (user_id)
 );
-CREATE INDEX IF NOT EXISTS idx_account_status ON user_account (account_status);
-CREATE INDEX IF NOT EXISTS idx_risk_level ON user_account (risk_level);
+CREATE INDEX IF NOT EXISTS user_account_idx_account_status ON user_account (account_status);
+CREATE INDEX IF NOT EXISTS user_account_idx_risk_level ON user_account (risk_level);
 INSERT INTO user_account (id, user_id, account_no, account_type, balance, frozen_balance, total_income, total_expense, currency_code, account_status, risk_level, open_channel, remark, create_time, update_time, is_deleted) VALUES (1, 'U10001', '6222020000001001', 1, 25800.5000, 0.0000, 0.0000, 0.0000, 'CNY', 1, 1, 'APP', '正常商户用户', '2026-10-29 17:48:16', '2026-10-29 17:48:16', 0);
 INSERT INTO user_account (id, user_id, account_no, account_type, balance, frozen_balance, total_income, total_expense, currency_code, account_status, risk_level, open_channel, remark, create_time, update_time, is_deleted) VALUES (2, 'U10002', '6222020000001002', 1, 120.0000, 0.0000, 0.0000, 0.0000, 'CNY', 1, 2, 'H5', '近期提现频繁', '2026-10-29 17:48:16', '2026-10-29 17:48:16', 0);
 INSERT INTO user_account (id, user_id, account_no, account_type, balance, frozen_balance, total_income, total_expense, currency_code, account_status, risk_level, open_channel, remark, create_time, update_time, is_deleted) VALUES (3, 'U10003', '6222020000001003', 2, 980000.0000, 0.0000, 0.0000, 0.0000, 'CNY', 1, 1, 'PC', '企业结算账户', '2026-10-29 17:48:16', '2026-10-29 17:48:16', 0);
@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS users (
     event_date TEXT NOT NULL,
     is_churned INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_event_date ON users (event_date);
+CREATE INDEX IF NOT EXISTS users_idx_event_date ON users (event_date);
 INSERT INTO users (user_id, rfm_score, orders_30d, support_tickets, event_date, is_churned) VALUES (1, 95.0, 10, 0, '2025-01-10', 0);
 INSERT INTO users (user_id, rfm_score, orders_30d, support_tickets, event_date, is_churned) VALUES (2, 91.0, 9, 1, '2025-01-20', 0);
 INSERT INTO users (user_id, rfm_score, orders_30d, support_tickets, event_date, is_churned) VALUES (3, 87.0, 8, 0, '2025-02-10', 0);

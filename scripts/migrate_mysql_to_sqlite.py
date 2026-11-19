@@ -11,6 +11,9 @@
     * 只读：对 MySQL 仅 inspect / SELECT，绝不写入。
     * 幂等可重跑：表/列/行/索引顺序固定，文件头不含时间戳，
       源数据不变时重复运行产出字节一致的文件。
+    * 索引名按表命名空间化（<table>_<源索引名>）：SQLite 索引名全库唯一，
+      MySQL 索引名按表唯一；跨表同名索引（如 idx_account_no）若直接沿用，
+      CREATE INDEX IF NOT EXISTS 会静默丢弃后者。
     * 行数对账：生成后自动把种子加载进 sqlite3 :memory:，逐表 COUNT==源，
       不一致则非零退出。
 
@@ -255,6 +258,23 @@ def render_table_ddl(table: str, info: dict) -> str:
     return f"CREATE TABLE IF NOT EXISTS {ident(table)} (\n" + ",\n".join(lines) + "\n);"
 
 
+def index_name(table: str, source_name: str) -> str:
+    """SQLite 索引名全库唯一 → 按表命名空间化，杜绝跨表同名碰撞。"""
+    return f"{table}_{source_name}"
+
+
+def expected_index_inventory(source: dict) -> dict:
+    """源非唯一索引的期望清单：{命名空间化索引名: (表, 列)}。"""
+    expected = {}
+    for table, info in source.items():
+        unique_names = {u["name"] for u in info["uniques"]}
+        for idx in info["indexes"]:
+            if idx["name"] in unique_names:
+                continue  # 唯一约束已承载（sqlite_autoindex_*），不计入显式索引
+            expected[index_name(table, idx["name"])] = (table, list(idx["column_names"]))
+    return expected
+
+
 def render_index_ddl(table: str, info: dict) -> list:
     unique_names = {u["name"] for u in info["uniques"]}
     statements = []
@@ -262,8 +282,9 @@ def render_index_ddl(table: str, info: dict) -> list:
         if idx["name"] in unique_names:
             continue  # 唯一约束已承载，避免重复索引
         cols = ", ".join(ident(c) for c in idx["column_names"])
+        name = ident(index_name(table, idx["name"]))
         statements.append(
-            f"CREATE INDEX IF NOT EXISTS {ident(idx['name'])} ON {ident(table)} ({cols});"
+            f"CREATE INDEX IF NOT EXISTS {name} ON {ident(table)} ({cols});"
         )
     return statements
 
@@ -306,7 +327,7 @@ def render_seed(source: dict, tables: list, title: str, extra_notes: str = "") -
 
 
 def verify_seeds(source: dict, business_sql: str, history_sql: str) -> list:
-    """把种子加载进 :memory:，逐表 COUNT 对账源行数。"""
+    """把种子加载进 :memory:，逐表 COUNT 对账源行数 + 全量索引清单对账。"""
     conn = sqlite3.connect(":memory:")
     try:
         conn.executescript(business_sql)
@@ -325,6 +346,25 @@ def verify_seeds(source: dict, business_sql: str, history_sql: str) -> list:
             if seed_count != src_count:
                 raise MigrationError(f"{table}: 种子 {seed_count} 行 != 源 {src_count} 行")
             results.append((table, info["kind"], src_count, seed_count))
+
+        # 索引全量对账：声明 vs 实际（防全局索引名碰撞被 IF NOT EXISTS 静默吞掉）
+        expected = expected_index_inventory(source)
+        actual = {}
+        for table in source:
+            for row in conn.execute(f"PRAGMA index_list({ident(table)})"):
+                # row=(seq, name, unique, origin, partial)；origin 'c'=CREATE INDEX，
+                # 'u'/'pk' 为 UNIQUE/PRIMARY KEY 自动索引，不在显式清单内
+                if row[3] != "c":
+                    continue
+                cols = [r[2] for r in conn.execute(f"PRAGMA index_info({ident(row[1])})")]
+                actual[row[1]] = (table, cols)
+        if actual != expected:
+            missing = sorted(set(expected) - set(actual))
+            extra = sorted(set(actual) - set(expected))
+            mismatch = sorted(k for k in set(expected) & set(actual) if expected[k] != actual[k])
+            raise MigrationError(
+                f"索引清单不一致: 缺失={missing} 多余={extra} 表/列不符={mismatch}"
+            )
         return results
     finally:
         conn.close()

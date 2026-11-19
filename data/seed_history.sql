@@ -36,11 +36,11 @@ CREATE TABLE IF NOT EXISTS sql_generation_history (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_created_at ON sql_generation_history (created_at);
-CREATE INDEX IF NOT EXISTS idx_execution_status ON sql_generation_history (execution_status);
-CREATE INDEX IF NOT EXISTS idx_governed_few_shot ON sql_generation_history (governance_validated, semantic_datasource, semantic_dialect, semantic_version, semantic_content_sha256, validation_status, execution_status, created_at);
-CREATE INDEX IF NOT EXISTS idx_session ON sql_generation_history (session_id);
-CREATE INDEX IF NOT EXISTS idx_validation_status ON sql_generation_history (validation_status);
+CREATE INDEX IF NOT EXISTS sql_generation_history_idx_created_at ON sql_generation_history (created_at);
+CREATE INDEX IF NOT EXISTS sql_generation_history_idx_execution_status ON sql_generation_history (execution_status);
+CREATE INDEX IF NOT EXISTS sql_generation_history_idx_governed_few_shot ON sql_generation_history (governance_validated, semantic_datasource, semantic_dialect, semantic_version, semantic_content_sha256, validation_status, execution_status, created_at);
+CREATE INDEX IF NOT EXISTS sql_generation_history_idx_session ON sql_generation_history (session_id);
+CREATE INDEX IF NOT EXISTS sql_generation_history_idx_validation_status ON sql_generation_history (validation_status);
 INSERT INTO sql_generation_history (id, session_id, user_query, generated_sql, sql_dialect, semantic_datasource, semantic_dialect, semantic_version, semantic_content_sha256, governance_validated, validation_status, validation_error, execution_status, execution_error, execution_result, matched_knowledge, retrieval_query, feedback_score, feedback_comment, created_at, updated_at) VALUES (1, '595978d3-f092-4474-a687-7a1f5b7626ed', '测试查询', 'SELECT * FROM users', 'mysql', NULL, NULL, NULL, NULL, 0, 'pass', NULL, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-21 18:36:51', '2026-03-21 18:36:51');
 INSERT INTO sql_generation_history (id, session_id, user_query, generated_sql, sql_dialect, semantic_datasource, semantic_dialect, semantic_version, semantic_content_sha256, governance_validated, validation_status, validation_error, execution_status, execution_error, execution_result, matched_knowledge, retrieval_query, feedback_score, feedback_comment, created_at, updated_at) VALUES (2, 'f6877ca9-5bf9-4269-8472-5a365c2f2ed8', '测试查询', 'SELECT * FROM users', 'mysql', NULL, NULL, NULL, NULL, 0, 'pass', NULL, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-21 18:38:38', '2026-03-21 18:38:38');
 INSERT INTO sql_generation_history (id, session_id, user_query, generated_sql, sql_dialect, semantic_datasource, semantic_dialect, semantic_version, semantic_content_sha256, governance_validated, validation_status, validation_error, execution_status, execution_error, execution_result, matched_knowledge, retrieval_query, feedback_score, feedback_comment, created_at, updated_at) VALUES (3, 'a9f41b4d-31d5-4809-9a1d-e0f0ec2f7252', '测试查询', 'SELECT * FROM users', 'mysql', NULL, NULL, NULL, NULL, 0, 'pass', NULL, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, '2026-03-21 21:24:38', '2026-03-21 21:24:38');
@@ -307,7 +307,7 @@ CREATE TABLE IF NOT EXISTS user_feedback (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (history_id) REFERENCES sql_generation_history (id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_history_id ON user_feedback (history_id);
+CREATE INDEX IF NOT EXISTS user_feedback_idx_history_id ON user_feedback (history_id);
 
 -- ------------------------------------------------------------
 -- table_schema — 数据表信息表（0 行）
@@ -338,7 +338,7 @@ CREATE TABLE IF NOT EXISTS column_schema (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_table_id ON column_schema (table_id);
+CREATE INDEX IF NOT EXISTS column_schema_idx_table_id ON column_schema (table_id);
 
 -- ------------------------------------------------------------
 -- knowledge_metadata — 知识库元数据表（0 行）
@@ -354,9 +354,9 @@ CREATE TABLE IF NOT EXISTS knowledge_metadata (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_node_label ON knowledge_metadata (node_label);
-CREATE INDEX IF NOT EXISTS idx_node_type ON knowledge_metadata (node_type);
-CREATE INDEX IF NOT EXISTS idx_related_tables ON knowledge_metadata (related_tables);
+CREATE INDEX IF NOT EXISTS knowledge_metadata_idx_node_label ON knowledge_metadata (node_label);
+CREATE INDEX IF NOT EXISTS knowledge_metadata_idx_node_type ON knowledge_metadata (node_type);
+CREATE INDEX IF NOT EXISTS knowledge_metadata_idx_related_tables ON knowledge_metadata (related_tables);
 
 -- ------------------------------------------------------------
 -- retrieval_terms — 检索词表（0 行）
@@ -370,5 +370,5 @@ CREATE TABLE IF NOT EXISTS retrieval_terms (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_node_id ON retrieval_terms (node_id);
-CREATE INDEX IF NOT EXISTS idx_term ON retrieval_terms (term);
+CREATE INDEX IF NOT EXISTS retrieval_terms_idx_node_id ON retrieval_terms (node_id);
+CREATE INDEX IF NOT EXISTS retrieval_terms_idx_term ON retrieval_terms (term);

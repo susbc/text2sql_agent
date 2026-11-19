@@ -167,6 +167,60 @@ def test_new_history_row_defaults_to_sqlite_dialect(seed_db):
     assert new_id > 79
 
 
+# 源 MySQL 24 个非唯一索引（唯一约束由 CREATE TABLE 内 UNIQUE 承载，不计入）。
+# SQLite 索引名全库唯一（MySQL 按表唯一），故种子按表命名空间化：<table>_<源索引名>。
+# 回归：idx_account_no（account_freeze_log/transaction_record）与 idx_risk_level
+# （risk_blacklist/user_account）跨表同名，未命名空间化时 IF NOT EXISTS 会静默丢 2 个。
+EXPECTED_INDEXES = {
+    "account_freeze_log_idx_account_no": ("account_freeze_log", ["account_no"]),
+    "account_freeze_log_idx_freeze_status": ("account_freeze_log", ["freeze_status"]),
+    "daily_account_check_idx_check_status": ("daily_account_check", ["check_status"]),
+    "fee_rate_config_idx_trans_scene": ("fee_rate_config", ["trans_scene"]),
+    "risk_blacklist_idx_risk_level": ("risk_blacklist", ["risk_level"]),
+    "transaction_record_idx_account_no": ("transaction_record", ["account_no"]),
+    "transaction_record_idx_create_time": ("transaction_record", ["create_time"]),
+    "transaction_record_idx_order_batch_no": ("transaction_record", ["order_batch_no"]),
+    "transaction_record_idx_trans_status": ("transaction_record", ["trans_status"]),
+    "user_account_idx_account_status": ("user_account", ["account_status"]),
+    "user_account_idx_risk_level": ("user_account", ["risk_level"]),
+    "users_idx_event_date": ("users", ["event_date"]),
+    "sql_generation_history_idx_created_at": ("sql_generation_history", ["created_at"]),
+    "sql_generation_history_idx_execution_status": (
+        "sql_generation_history", ["execution_status"]),
+    "sql_generation_history_idx_governed_few_shot": (
+        "sql_generation_history",
+        ["governance_validated", "semantic_datasource", "semantic_dialect",
+         "semantic_version", "semantic_content_sha256", "validation_status",
+         "execution_status", "created_at"]),
+    "sql_generation_history_idx_session": ("sql_generation_history", ["session_id"]),
+    "sql_generation_history_idx_validation_status": (
+        "sql_generation_history", ["validation_status"]),
+    "user_feedback_idx_history_id": ("user_feedback", ["history_id"]),
+    "column_schema_idx_table_id": ("column_schema", ["table_id"]),
+    "knowledge_metadata_idx_node_label": ("knowledge_metadata", ["node_label"]),
+    "knowledge_metadata_idx_node_type": ("knowledge_metadata", ["node_type"]),
+    "knowledge_metadata_idx_related_tables": ("knowledge_metadata", ["related_tables"]),
+    "retrieval_terms_idx_node_id": ("retrieval_terms", ["node_id"]),
+    "retrieval_terms_idx_term": ("retrieval_terms", ["term"]),
+}
+
+
+def test_seed_index_inventory_complete(seed_db):
+    """全部 24 个源索引必须真实存在（表/列一致），杜绝全局索引名碰撞静默丢失。"""
+    actual = {}
+    for name, table in seed_db.execute(
+        "SELECT name, tbl_name FROM sqlite_master "
+        "WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+    ):
+        cols = [r[2] for r in seed_db.execute(f"PRAGMA index_info({name})")]
+        actual[name] = (table, cols)
+    assert len(EXPECTED_INDEXES) == 24
+    assert actual == EXPECTED_INDEXES, (
+        f"索引清单不一致: 缺失={sorted(set(EXPECTED_INDEXES) - set(actual))} "
+        f"多余={sorted(set(actual) - set(EXPECTED_INDEXES))}"
+    )
+
+
 def test_seed_money_and_datetime_fidelity(seed_db):
     # 源值抽查（只读 SELECT 核定）：transaction_record id=1
     amount, fee, created, currency = seed_db.execute(
