@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from loguru import logger
 
 import config
 import launcher
@@ -163,10 +164,57 @@ def test_resolve_main_script_frozen(monkeypatch, tmp_path):
     assert launcher.resolve_main_script() == tmp_path / "app.py"
 
 
-def test_main_orchestrates_without_starting_server(data_dir, monkeypatch):
+def test_main_orchestrates_without_starting_server(data_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LOG_FILE", tmp_path / "logs" / "app.log")
     calls = []
     monkeypatch.setattr(launcher, "launch_streamlit", lambda: calls.append("launch"))
-    launcher.main()
-    assert calls == ["launch"]
-    assert (data_dir / ".env").is_file()
-    assert (data_dir / "logs").is_dir()
+    try:
+        launcher.main()
+        assert calls == ["launch"]
+        assert (data_dir / ".env").is_file()
+        assert (data_dir / "logs").is_dir()
+    finally:
+        # main() 挂的早期 sink 须回收，避免泄漏到后续测试
+        logger.remove()
+        logger.add(sys.stderr)
+
+
+def test_early_sink_port_line_survives_app_reconfigure(tmp_path, monkeypatch):
+    """I6/R8：端口行经早期 sink 落盘；app.py 重配 logging 后仍在文件。"""
+    log_file = tmp_path / "logs" / "app.log"
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    sink_id = launcher.setup_early_log_sink()
+    try:
+        assert isinstance(sink_id, int)
+        assert log_file.parent.is_dir()  # 父目录自动创建
+        logger.info("启动 Streamlit：{}（http://127.0.0.1:{}）", "app.py", 8502)
+        # 模拟 app.py 重配 logging：logger.remove() 清掉全部 sink 再挂旋转文件 sink
+        logger.remove()
+        logger.add(log_file, level="INFO", rotation="1 day")
+        logger.info("重配后的后续日志")
+        text = log_file.read_text(encoding="utf-8")
+        assert "http://127.0.0.1:8502" in text
+        assert "重配后的后续日志" in text
+    finally:
+        logger.remove()
+        logger.add(sys.stderr)
+
+
+def test_main_installs_early_sink_before_launch(data_dir, tmp_path, monkeypatch):
+    """I6：main() 在 launch_streamlit 之前挂早期 sink，端口行/数据目录行落盘。"""
+    log_file = tmp_path / "early" / "app.log"
+    monkeypatch.setattr(config, "LOG_FILE", log_file)
+    seen = {}
+
+    def fake_launch():
+        logger.info("启动 Streamlit：{}（http://127.0.0.1:{}）", "app.py", 8502)
+        seen["text"] = log_file.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(launcher, "launch_streamlit", fake_launch)
+    try:
+        launcher.main()
+        assert "http://127.0.0.1:8502" in seen["text"]
+        assert "数据目录就绪" in seen["text"]
+    finally:
+        logger.remove()
+        logger.add(sys.stderr)

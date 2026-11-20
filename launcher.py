@@ -5,7 +5,9 @@
    写默认模板（已存在的 .env 绝不覆盖）。
 2. copy_semantic_models()：冻结态首跑把 bundle 内 semantic_models/ 复制到
    DATA_DIR/semantic_models（目标已存在则不动）。
-3. launch_streamlit()：进程内起 Streamlit（冻结态不能 `sys.executable -m
+3. setup_early_log_sink()：早期 loguru 文件 sink（config.LOG_FILE），使启动
+   端口行在 app.py 重配 logging 之前已落 logs/app.log（R8）。
+4. launch_streamlit()：进程内起 Streamlit（冻结态不能 `sys.executable -m
    streamlit`），headless 绑定 127.0.0.1，端口 8501 起探测占用递增；服务就绪
    后 webbrowser.open。
 
@@ -29,6 +31,7 @@ from pathlib import Path
 from loguru import logger
 
 import config
+from core.utils.log_sanitizer import safe_log_format
 
 # 默认起始端口（与 config.STREAMLIT_SERVER_PORT 默认一致）；占用则递增探测。
 DEFAULT_STREAMLIT_PORT = 8501
@@ -114,6 +117,22 @@ def ensure_data_dir() -> Path:
     (data_dir / "logs").mkdir(parents=True, exist_ok=True)
     write_env_template(data_dir)
     return data_dir
+
+
+def setup_early_log_sink() -> int:
+    """早期 loguru 文件 sink（R8，Task 8 I6）：让启动端口行落 logs/app.log。
+
+    端口行由 launch_streamlit 在 bootstrap.run 之前发出，而 app.py 要到脚本
+    运行时才重配 logging（logger.remove() 先清掉全部既有 sink）——没有本早期
+    sink 时端口行只留在终端（windowed 双击不可见），README「实际端口见
+    logs/app.log」不成立。sink 目标＝config.LOG_FILE（冻结态即
+    DATA_DIR/logs/app.log，与 app.py 文件 sink 同一文件）；level=DEBUG 保证
+    端口行不被 LOG_LEVEL 过滤。app.py 重配 logging 时本 sink 被 remove()
+    回收，端口行已落盘不受影响。返回 sink id（便于测试移除）。
+    """
+    log_path = Path(config.LOG_FILE)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return logger.add(log_path, level="DEBUG", format=safe_log_format)
 
 
 def copy_semantic_models() -> bool:
@@ -226,8 +245,9 @@ def _exec_multiprocessing_child() -> bool:
 
 
 def main() -> None:
-    """打包入口：数据目录初始化 → 种子复制（冻结态）→ 进程内起 Streamlit。"""
+    """打包入口：数据目录初始化 → 早期日志 sink → 种子复制（冻结态）→ 起 Streamlit。"""
     data_dir = ensure_data_dir()
+    setup_early_log_sink()
     logger.info("数据目录就绪：{}", data_dir)
     if copy_semantic_models():
         logger.info("已复制 semantic_models → {}", data_dir / "semantic_models")

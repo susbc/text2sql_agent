@@ -1,6 +1,8 @@
 # 直接依赖 pins 与 macOS PoC 验证过的 venv 版本对齐（R6，Task 6）：
 # CI 从本文件全新解析安装，须复现已验证冻结构建的版本组合。
-# 传递依赖不 pin（保持原状）；§5.6 待决死依赖暂保留（另行裁决）。
+# 传递依赖经 packaging/constraints.txt 约束（R9，Task 8）：安装时加
+# `-c packaging/constraints.txt`，复现 PoC venv 验证过的传递版本集。
+# §5.6 待决死依赖暂保留（另行裁决）。
 
 # Neo4j Graph Database
 neo4j==5.15.0
@@ -9,9 +11,25 @@ neo4j==5.15.0
 sqlalchemy==2.0.48
 
 # LangChain
-langchain==0.1.0
-langchain-community==0.0.10
+# Task 8（I5 验证时发现）：原 pin langchain==0.1.0 + langchain-community==0.0.10
+# 声明 langsmith<0.1.0，与 langchain-core==0.1.53 声明的 langsmith>=0.1.0
+# 交集为空——pip 全新解析必然 ResolutionImpossible（PoC venv 系手工装配，
+# 实际 langsmith 0.1.147 漂移超出前两者声明范围）。对齐上游 0.1.x 末代一致
+# 组合：langchain 0.1.20 + community 0.0.38（均声明 langsmith>=0.1.x,<0.2.0，
+# 与 core 0.1.53 相容）；core/langsmith/openai 系保持 PoC 验证版本不变。
+# 应用不 import 顶层 langchain；community 仅用 ChatOllama（0.0.x 系列 API 稳定）。
+langchain==0.1.20
+langchain-community==0.0.38
 langchain-core==0.1.53
+# 云端 OpenAI 兼容 LLM 路线（openai/azure/dashscope/deepseek/zhipu）：
+# core/llm_factory.py 懒导入 langchain_openai；spec collect_all 缺包仅告警跳过，
+# 缺 pin 会让 CI 全新构建产物云端路线全 ImportError（Task 8 C1）。
+langchain-openai==0.1.0
+
+# 云端 SDK（openai 被 core/embedding_factory.py 直 import，须直 pin；
+# tiktoken 供 ChatOpenAI token 计数，tiktoken_ext 插件经 entry_points 加载）
+openai==1.109.1
+tiktoken==0.12.0
 
 # Text Retrieval
 rank-bm25==0.2.2

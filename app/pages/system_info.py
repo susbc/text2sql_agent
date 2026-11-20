@@ -1,5 +1,6 @@
 """系统信息页面（自 app.py「Tab 4: 系统信息」段迁入）。"""
 import os
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -73,9 +74,16 @@ def show_system_info() -> None:
 
     # 首跑引导（打包 spec §5.3）：未配置时引导而非崩溃
     if _needs_first_run_guidance(_active):
+        # 持久化承诺仅适用于打包（frozen）应用：冻结态 config 启动读 DATA_DIR/.env，
+        # 保存跨重启存活；开发态配置会话级（R7），开发者自管根 .env。
+        persist_note = (
+            "保存后自动写入本机配置文件（.env），重启不丢失。"
+            if getattr(sys, "frozen", False)
+            else "保存后本次会话内生效；开发态配置不落盘（重启后回到根 .env，开发者请自管根 .env）。"
+        )
         st.info(
             "**首次运行引导**：当前模型配置尚不可用。请在下方「模型配置」面板完成配置，"
-            "保存后自动写入本机配置文件（.env），重启不丢失。\n"
+            + persist_note + "\n"
             "- **本地 Ollama（无需 API Key）**：安装并启动 Ollama，然后拉取两个模型："
             "`ollama pull gemma4:E4B`（LLM）与 `ollama pull bge-m3:latest`（Embedding）。\n"
             "- **云端 API**：选择云端提供商并填写 API Key；Embedding 建议配 DashScope "

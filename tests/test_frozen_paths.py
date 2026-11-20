@@ -5,11 +5,16 @@
 每个用例结束后 reload(config) 恢复开发态，避免污染其他测试。
 """
 import importlib
+import ntpath
 import os
 import sys
+import types
 
 import dotenv
 import platformdirs
+from platformdirs import windows as pwin
+from platformdirs.macos import MacOS
+from platformdirs.unix import Unix
 
 import config
 
@@ -71,6 +76,55 @@ def test_frozen_mode_uses_user_data_dir(monkeypatch, tmp_path):
             assert calls == [tmp_path / ".env"]
     finally:
         importlib.reload(config)
+
+
+def test_frozen_passes_appauthor_false(monkeypatch, tmp_path):
+    """I2：config 必须以 appauthor=False 调 user_data_dir（防 Windows 双层路径）。"""
+    captured = {}
+
+    def spy(appname, *args, **kwargs):
+        captured["appname"] = appname
+        captured["kwargs"] = kwargs
+        return str(tmp_path)
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(sys, "frozen", True, raising=False)
+            m.setattr(platformdirs, "user_data_dir", spy)
+            importlib.reload(config)
+            assert captured["appname"] == "text2sql-agent"
+            assert captured["kwargs"].get("appauthor") is False
+    finally:
+        importlib.reload(config)
+
+
+def test_windows_data_dir_single_layer(monkeypatch):
+    """I2：Windows appauthor=False → %LOCALAPPDATA%\\text2sql-agent 单层。
+
+    platformdirs.windows 在非 Windows 上经 ctypes 解析真实 Windows 目录会
+    NotImplementedError，故桩 get_win_folder 并借 ntpath 复现 Windows 路径语义。
+    """
+    monkeypatch.setattr(
+        pwin, "get_win_folder", lambda csidl: r"C:\Users\tester\AppData\Local"
+    )
+    monkeypatch.setattr(pwin, "os", types.SimpleNamespace(path=ntpath))
+    single = pwin.Windows(appname="text2sql-agent", appauthor=False).user_data_dir
+    assert single == r"C:\Users\tester\AppData\Local\text2sql-agent"
+    # 对照：不带 appauthor=False 时 author 层翻倍（修复前的 bug 形状）
+    double = pwin.Windows(appname="text2sql-agent").user_data_dir
+    assert double == r"C:\Users\tester\AppData\Local\text2sql-agent\text2sql-agent"
+
+
+def test_macos_linux_paths_unaffected_by_appauthor():
+    """I2：appauthor=False 对 macOS/Linux 路径无影响（与默认调用逐字一致）。"""
+    assert (
+        MacOS(appname="text2sql-agent", appauthor=False).user_data_dir
+        == MacOS(appname="text2sql-agent").user_data_dir
+    )
+    assert (
+        Unix(appname="text2sql-agent", appauthor=False).user_data_dir
+        == Unix(appname="text2sql-agent").user_data_dir
+    )
 
 
 def test_frozen_env_override_still_wins(monkeypatch, tmp_path):

@@ -62,14 +62,17 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-build.txt
+            packaging/constraints.txt
 
       - name: Export VERSION（单一事实源＝根 VERSION 文件）
         run: echo "VERSION=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
+        # -c packaging/constraints.txt（R9）：复现 PoC venv 验证过的传递依赖集；
+        # 直接依赖 pins 在 requirements*.txt，constraints 只约束实际安装的包
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-build.txt
+          python -m pip install -r requirements.txt -r requirements-build.txt -c packaging/constraints.txt
 
       - name: PyInstaller build
         run: pyinstaller text2sql.spec --noconfirm

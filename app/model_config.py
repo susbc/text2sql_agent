@@ -1,4 +1,6 @@
 """模型配置辅助函数（自 app.py「模型配置辅助函数」段迁入）。"""
+import sys
+
 import streamlit as st
 from loguru import logger
 
@@ -26,9 +28,14 @@ _CONFIG_LOG_HINT = "详情请查看 logs/app.log 中的错误编号"
 def _persist_config(updates: dict) -> None:
     """热重载成功后把配置写入 DATA_DIR/.env，跨重启存活（打包 spec §5.3/Q1）。
 
-    开发态落 data/.env、冻结态落用户数据目录/.env，均不碰根目录用户 .env。
+    仅冻结态（打包应用）持久化：冻结态 config 启动时读 DATA_DIR/.env，保存后
+    重启不丢。开发态 config 只读根 .env（无参 load_dotenv()），写 data/.env
+    重启也不会生效，故保持会话级（R7：与门控前行为一致，不承诺重启存活）；
+    开发者自管根 .env。两种模式均不碰根目录用户 .env。
     持久化失败不回滚本次会话已生效的配置，仅记日志（下次保存可重试）。
     """
+    if not getattr(sys, "frozen", False):
+        return
     try:
         write_env_config(updates)
     except Exception as e:
@@ -61,7 +68,7 @@ def _apply_llm_config(provider: str, model: str, api_key: str, base_url: str) ->
         log_safe_exception("llm_config_reload", e)
         return False, f"LLM 加载失败，{_CONFIG_LOG_HINT}"
     logger.info(f"LLM 配置已更新：{provider}/{model}")
-    # 仅在热重载成功后持久化，跨重启存活（spec §5.3/Q1）
+    # 仅在热重载成功后持久化；冻结态写 DATA_DIR/.env 跨重启存活，开发态会话级（R7）
     _persist_config({
         "LLM_PROVIDER": provider,
         "LLM_MODEL": model,
@@ -93,7 +100,7 @@ def _apply_embedding_config(provider: str, model: str, api_key: str) -> tuple[bo
         log_safe_exception("embedding_config_reload", e)
         return False, f"Embedding 加载失败，{_CONFIG_LOG_HINT}"
     logger.info(f"Embedding 配置已更新：{provider}/{model}")
-    # 仅在热重载成功后持久化，跨重启存活（spec §5.3/Q3）
+    # 仅在热重载成功后持久化；冻结态写 DATA_DIR/.env 跨重启存活，开发态会话级（R7）
     _persist_config({
         "EMBEDDING_PROVIDER": provider,
         "EMBEDDING_MODEL": model,

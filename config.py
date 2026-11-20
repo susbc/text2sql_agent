@@ -27,9 +27,12 @@ PROJECT_ROOT = Path(__file__).parent
 # 冻结态（PyInstaller 打包）数据目录：重定向到可写的用户数据目录
 # （Win %LOCALAPPDATA%、Mac ~/Library/Application Support、Linux ~/.local/share）；
 # 开发态保持 PROJECT_ROOT/data 不变（打包 spec §5.1）。
+# appauthor=False（Task 8 I2）：Windows 默认会追加 author 层产出
+# %LOCALAPPDATA%\text2sql-agent\text2sql-agent 双层路径；置 False 后三 OS
+# 单层一致（对 macOS/Linux 无影响），与 README/文档路径相符。
 _FROZEN = getattr(sys, "frozen", False)
 DATA_DIR = (
-    Path(platformdirs.user_data_dir("text2sql-agent"))
+    Path(platformdirs.user_data_dir("text2sql-agent", appauthor=False))
     if _FROZEN
     else PROJECT_ROOT / "data"
 )

@@ -1,13 +1,15 @@
-"""首跑向导配置持久化测试（打包 spec §5.3 / §9-Q1/Q3）。
+"""首跑向导配置持久化测试（打包 spec §5.3 / §9-Q1/Q3，Task 8 R7 门控）。
 
 覆盖：
 - write_env_config 合并写回 DATA_DIR/.env：保留注释/顺序/无关键，原子写；
 - 持久化跨"重启"生效（冻结态 reload(config) 模拟新进程加载 DATA_DIR/.env）；
-- model_config 保存成功后才持久化（AppTest），失败不写；
-- 未配置 LLM（云端缺 Key / Ollama 不可达）时 system_info 显示首跑引导（AppTest）。
+- _persist_config 仅冻结态写盘（R7）：dev 会话级不写 data/.env、frozen 写；
+- model_config 保存成功后才持久化（AppTest，冻结态），失败不写；dev 保存成功不落盘；
+- 未配置 LLM（云端缺 Key / Ollama 不可达）时 system_info 显示首跑引导（AppTest），
+  引导文案按模式区分：frozen 承诺重启不丢、dev 明示会话级（开发者自管根 .env）。
 
-开发态 DATA_DIR=PROJECT_ROOT/data，持久化落 data/.env（不碰根目录用户 .env）；
-测试一律把 config.DATA_DIR 指到 tmp_path，不污染真实数据目录。
+测试一律把 config.DATA_DIR 指到 tmp_path，不污染真实数据目录；AppTest 持久化
+用例以 frozen fixture 模拟打包态（sys.frozen=True，进程内可见）。
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ APP_PY = PROJECT_ROOT / "app.py"
 pytest.importorskip("streamlit", reason="Streamlit 未安装")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
+from app import model_config as mc  # noqa: E402
 from app.pages import system_info  # noqa: E402
 from config import (  # noqa: E402
     EMBEDDING_PROVIDERS,
@@ -59,6 +62,12 @@ def data_dir(tmp_path, monkeypatch):
     """把 config.DATA_DIR 指到临时目录（helper 须在调用时动态读取）。"""
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def frozen(monkeypatch):
+    """R7：持久化是打包（frozen）应用特性；持久化用例须模拟冻结态。"""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +155,35 @@ def test_write_env_config_updates_all_duplicate_occurrences(data_dir):
     assert "old-1" not in text and "old-2" not in text
     assert text.count("LLM_API_KEY=sk-dup") == 2
     assert "OTHER=1" in text
+
+
+# ==================== _persist_config 模式门控（R7） ====================
+
+
+def test_persist_config_dev_does_not_write(data_dir, monkeypatch):
+    """R7：开发态保存会话级——不写 data/.env（dev config 只读根 .env，写了也不生效）。"""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    mc._persist_config({"LLM_PROVIDER": "ollama", "LLM_MODEL": "gemma4:E4B"})
+    assert not (data_dir / ".env").exists()
+
+
+def test_persist_config_frozen_writes(data_dir, frozen):
+    """R7：冻结态保存写 DATA_DIR/.env（打包应用跨重启存活）。"""
+    mc._persist_config({"LLM_PROVIDER": "ollama", "LLM_MODEL": "gemma4:E4B"})
+    text = (data_dir / ".env").read_text(encoding="utf-8")
+    assert "LLM_PROVIDER=ollama" in text
+    assert "LLM_MODEL=gemma4:E4B" in text
+
+
+def test_persist_config_frozen_failure_tolerated(data_dir, frozen, monkeypatch):
+    """冻结态写失败不上抛、不回滚会话配置（仅记日志，下次保存可重试）。"""
+
+    def broken(updates):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(mc, "write_env_config", broken)
+    mc._persist_config({"LLM_MODEL": "x"})  # 不得抛异常
+    assert not (data_dir / ".env").exists()
 
 
 # ==================== 跨重启存活（冻结态 reload 模拟） ====================
@@ -248,7 +286,7 @@ def _launch(ctx: FakeContext) -> AppTest:
     return at
 
 
-def test_save_llm_persists_to_data_dir_env(data_dir):
+def test_save_llm_persists_to_data_dir_env(data_dir, frozen):
     ctx = FakeContext(_base_config())
     at = _launch(ctx)
     at.text_input(key="cfg_llm_api_key").set_value("sk-brand-new-key")
@@ -262,7 +300,7 @@ def test_save_llm_persists_to_data_dir_env(data_dir):
     assert "LLM_BASE_URL=" in text
 
 
-def test_save_llm_blank_key_persists_active_key(data_dir):
+def test_save_llm_blank_key_persists_active_key(data_dir, frozen):
     """留空沿用当前密钥：持久化的必须是解析后的生效密钥，而非空输入。"""
     ctx = FakeContext(_base_config(llm_api_key="sk-active-secret"))
     at = _launch(ctx)
@@ -273,7 +311,7 @@ def test_save_llm_blank_key_persists_active_key(data_dir):
     assert "LLM_API_KEY=sk-active-secret" in text
 
 
-def test_failed_save_does_not_persist(data_dir):
+def test_failed_save_does_not_persist(data_dir, frozen):
     ctx = FailingContext(_base_config())
     at = _launch(ctx)
     at.text_input(key="cfg_llm_api_key").set_value("sk-should-not-persist")
@@ -283,7 +321,7 @@ def test_failed_save_does_not_persist(data_dir):
     assert not (data_dir / ".env").exists()
 
 
-def test_save_embedding_persists_to_data_dir_env(data_dir):
+def test_save_embedding_persists_to_data_dir_env(data_dir, frozen):
     ctx = FakeContext(_base_config())
     at = _launch(ctx)
     at.selectbox(key="cfg_emb_provider").set_value(EMB_KEY_PROVIDER_LABEL)
@@ -298,12 +336,26 @@ def test_save_embedding_persists_to_data_dir_env(data_dir):
     assert f"EMBEDDING_MODEL={EMBEDDING_PROVIDERS[EMB_KEY_PROVIDER]['default_model']}" in text
 
 
-def test_failed_embedding_save_does_not_persist(data_dir):
+def test_failed_embedding_save_does_not_persist(data_dir, frozen):
     ctx = FailingContext(_base_config())
     at = _launch(ctx)
     at.button(key="btn_save_emb").click()
     at.run()
     assert at.error
+    assert not (data_dir / ".env").exists()
+
+
+def test_save_llm_dev_session_only(data_dir, monkeypatch):
+    """R7：开发态保存成功（热重载生效）但不落盘——会话级配置。"""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    ctx = FakeContext(_base_config())
+    at = _launch(ctx)
+    at.text_input(key="cfg_llm_api_key").set_value("sk-dev-session")
+    at.button(key="btn_save_llm").click()
+    at.run()
+    assert not at.exception
+    assert any("LLM 已切换为" in s.value for s in at.success)
+    assert ctx.llm_reload_calls  # 热重载确实发生
     assert not (data_dir / ".env").exists()
 
 
@@ -333,6 +385,29 @@ def test_cloud_provider_without_key_shows_guidance():
     ctx = FakeContext(_base_config(llm_provider=KEY_PROVIDER, llm_api_key=""))
     at = _launch(ctx)
     assert GUIDANCE_MARKER in _info_text(at)
+
+
+def test_guidance_frozen_promises_persistence(monkeypatch, frozen):
+    """R7：打包（frozen）引导文案承诺保存落盘、重启不丢。"""
+    monkeypatch.setattr(system_info, "_ollama_reachable", lambda base_url="": False)
+    ctx = FakeContext(_base_config(llm_provider="ollama", llm_api_key=""))
+    at = _launch(ctx)
+    text = _info_text(at)
+    assert GUIDANCE_MARKER in text
+    assert "重启不丢失" in text
+
+
+def test_guidance_dev_session_only_wording(monkeypatch):
+    """R7：开发态引导文案明示会话级、开发者自管根 .env，不承诺重启存活。"""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setattr(system_info, "_ollama_reachable", lambda base_url="": False)
+    ctx = FakeContext(_base_config(llm_provider="ollama", llm_api_key=""))
+    at = _launch(ctx)
+    text = _info_text(at)
+    assert GUIDANCE_MARKER in text
+    assert "会话" in text
+    assert "根 .env" in text
+    assert "重启不丢失" not in text
 
 
 def test_configured_llm_hides_guidance(monkeypatch):

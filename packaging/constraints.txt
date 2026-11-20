@@ -1,0 +1,146 @@
+# 构建复现约束（R9，Task 8 I5）：macOS PoC venv（arm64 / Python 3.12）实测
+# 验证过的依赖闭包版本集＝requirements.txt + requirements-build.txt 全部直接
+# 依赖及其传递依赖（按 venv 已安装 dist metadata 的 Requires-Dist 计算闭包，
+# 剔除 extras 门控项；生成脚本 build/constraints_gen.py，gitignored scratch）。
+#
+# 用法（CI 与本地构建一致）：
+#   pip install -r requirements.txt -r requirements-build.txt -c packaging/constraints.txt
+#
+# 维护约定：刻意升级任一 pin（含 requirements*.txt 直接依赖）须重建产物 +
+# 重跑 frozen PoC 清单（docs/packaging.md §5）复证，并同步更新本文件。
+#
+# 边界说明：
+# - constraints 只约束 CI 实际解析安装的包，不会引入额外安装。
+# - Windows/Linux 专属传递依赖（pefile、pywin32-ctypes、win32-setctime、
+#   greenlet、watchdog 等）在 macOS PoC venv 未安装，无法从中取版本，不在此列；
+#   对应 CI 腿自行解析（首次 CI 运行后如需复现再补录）。
+# - simple-ddl-parser / typer 为 requirements.txt 既有宽松条目，PoC venv 未装，
+#   不约束（保持原状）。
+# - **langchain 系刻意偏离 venv freeze（Task 8，I5 验证时发现）**：venv 的
+#   langchain 0.1.0 / community 0.0.10 声明 langsmith<0.1.0，与 core 0.1.53
+#   声明的 langsmith>=0.1.0 交集为空——照搬 freeze pip 必然
+#   ResolutionImpossible（venv 系手工装配，langsmith 0.1.147 漂移超出前两者
+#   声明范围）。requirements.txt 已对齐上游 0.1.x 末代一致组合：
+#   langchain==0.1.20 + community==0.0.38；langsmith==0.1.147 保持 venv
+#   验证版本。新增传递依赖 langchain-text-splitters==0.0.2（langchain 0.1.20
+#   引入，<0.1 末版；应用不用 text_splitter）。本机共享 venv 不改动（live dev
+#   依赖），本地重建产物含 langchain 0.1.0/community 0.0.10，CI 产物含
+#   0.1.20/0.0.38——core/langsmith/openai 系完全一致；差异面经 scratch venv
+#   全新安装 + ChatOllama/ChatOpenAI 冒烟核实（见 task-8-fix-report.md）。
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.3
+aiosignal==1.4.0
+altair==5.5.0
+altgraph==0.17.5
+annotated-types==0.7.0
+anyio==4.13.0
+appdirs==1.4.4
+attrs==26.1.0
+blinker==1.9.0
+cachetools==5.5.2
+certifi==2026.2.25
+cffi==2.0.0
+chardet==7.2.0
+charset-normalizer==3.4.6
+click==8.3.1
+colorama==0.4.6
+cryptography==46.0.5
+dashscope==1.25.15
+dataclasses-json==0.6.7
+diff_cover==10.2.0
+distro==1.9.0
+faiss-cpu==1.15.0
+frozenlist==1.8.0
+gitdb==4.0.12
+GitPython==3.1.46
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.11
+importlib-metadata==6.11.0
+iniconfig==2.3.0
+Jinja2==3.1.6
+jiter==0.13.0
+joblib==1.5.3
+jsonpatch==1.33
+jsonpointer==3.1.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+langchain==0.1.20
+langchain-community==0.0.38
+langchain-core==0.1.53
+langchain-openai==0.1.0
+langchain-text-splitters==0.0.2
+langsmith==0.1.147
+loguru==0.7.2
+macholib==1.16.4
+markdown-it-py==4.0.0
+MarkupSafe==3.0.3
+marshmallow==3.26.2
+mdurl==0.1.2
+multidict==6.7.1
+mypy_extensions==1.1.0
+narwhals==2.18.0
+neo4j==5.15.0
+nltk==3.8.1
+numpy==1.26.4
+openai==1.109.1
+orjson==3.11.7
+packaging==23.2
+pandas==2.3.3
+pathspec==1.0.4
+pillow==10.4.0
+platformdirs==4.14.7
+pluggy==1.6.0
+propcache==0.4.1
+protobuf==4.21.12
+pyarrow==23.0.1
+pycparser==3.0
+pydantic==2.12.5
+pydantic_core==2.41.5
+pydantic-settings==2.13.1
+pydeck==0.9.1
+Pygments==2.19.2
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10
+pytest==7.4.3
+pytest-asyncio==0.21.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.0.0
+pytz==2026.1.post1
+PyYAML==6.0.3
+rank-bm25==0.2.2
+referencing==0.37.0
+regex==2026.2.28
+requests==2.33.0
+requests-toolbelt==1.0.0
+rich==13.9.4
+rpds-py==0.30.0
+scikit-learn==1.3.2
+scipy==1.17.1
+setuptools==84.2.1
+six==1.17.0
+smmap==5.0.3
+sniffio==1.3.1
+SQLAlchemy==2.0.48
+sqlfluff==2.3.5
+sqlglot==30.18.0
+sqlparse==0.4.4
+streamlit==1.29.0
+tblib==3.2.2
+tenacity==8.5.0
+threadpoolctl==3.6.0
+tiktoken==0.12.0
+toml==0.10.2
+tornado==6.5.5
+tqdm==4.67.3
+typing_extensions==4.15.0
+typing-inspect==0.9.0
+typing-inspection==0.4.2
+tzdata==2025.3
+tzlocal==5.3.1
+urllib3==2.6.3
+validators==0.35.0
+websocket-client==1.9.0
+yarl==1.23.0
+zipp==3.23.0

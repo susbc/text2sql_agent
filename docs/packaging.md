@@ -17,7 +17,9 @@
 
 ```bash
 # 1) 运行时依赖 + 构建期依赖（pyinstaller 只在 requirements-build.txt）
-.venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
+#    -c packaging/constraints.txt（R9）：复现 PoC venv 验证过的传递依赖集
+.venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt \
+  -c packaging/constraints.txt
 
 # 2) 构建（约 90s 冷构建 / 70s 增量；macOS .app 实测约 549MB，onedir 约 545MB）
 .venv/bin/python -m PyInstaller text2sql.spec --noconfirm
@@ -31,10 +33,12 @@ dist/text2sql-agent.app/Contents/MacOS/text2sql-agent
 ```
 
 启动行为：创建用户数据目录（首跑写 `.env` 模板、复制 `semantic_models/`）→
-自 8501 起探测空闲端口（占用递增，上限 100 次尝试）→ 起服务（headless 绑定
-127.0.0.1）→ 就绪后自动开浏览器。调试日志：`<数据目录>/logs/app.log`
-（loguru 文件 sink）。CI/headless 场景可设 `BROWSER=true` 抑制自动开浏览器
-（stdlib `webbrowser` 语义）。
+挂早期 loguru 文件 sink（`<数据目录>/logs/app.log`，启动端口行先于 app.py
+重配 logging 落盘，R8）→ 自 8501 起探测空闲端口（占用递增，上限 100 次尝试）
+→ 起服务（headless 绑定 127.0.0.1）→ 就绪后自动开浏览器。调试日志：
+`<数据目录>/logs/app.log`（含「启动 Streamlit：…（http://127.0.0.1:<端口>）」
+端口行）。CI/headless 场景可设 `BROWSER=true` 抑制自动开浏览器（stdlib
+`webbrowser` 语义）。
 
 **运行时前提（不捆进包体）**：本地 Ollama（`ollama pull gemma4:E4B` +
 `ollama pull bge-m3:latest`）或云端 API Key（Embedding 建议 DashScope
@@ -100,7 +104,9 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
 
 ## 2. 数据目录（bundle 只读）
 
-冻结态 `config.DATA_DIR = platformdirs.user_data_dir("text2sql-agent")`：
+冻结态 `config.DATA_DIR = platformdirs.user_data_dir("text2sql-agent",
+appauthor=False)`（`appauthor=False` 防 Windows 双层 author 目录，三 OS 单层
+一致；对 macOS/Linux 无影响）：
 
 | OS | 路径 |
 | --- | --- |
@@ -108,8 +114,9 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
 | Windows | `%LOCALAPPDATA%\text2sql-agent` |
 | Linux | `~/.local/share/text2sql-agent` |
 
-内容：`.env`（首跑模板，绝不覆盖已有；模型配置面板保存经
-`core/config_persistence.write_env_config` 原子合并写回，跨重启存活）、
+内容：`.env`（首跑模板，绝不覆盖已有；**打包应用**模型配置面板保存经
+`core/config_persistence.write_env_config` 原子合并写回，跨重启存活——
+仅冻结态持久化（R7），开发态配置会话级、开发者自管根 `.env`）、
 `text2sql.db`（SQLite，种子自 bundle `data/seed_*.sql` 幂等加载）、`logs/`、
 `semantic_models/`（首跑自 bundle 复制）、`index_cache/`（可选）。
 **实测：多次启动+端到端查询后 bundle 内 0 个文件被修改/新增**
@@ -150,7 +157,9 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
   `yaml`→PyYAML），上述 `collect_all` 均已预验证可解析。
 - **缺失包行为**：`collect_all` 对未安装的包仅告警跳过（返回空三元组，
   PyInstaller 6.22 `on_error="warn once"`），不中断构建——缺包会静默产出
-  运行时缺模块的产物，构建环境须与 PoC venv 对齐（见 §6 langchain-openai 条）。
+  运行时缺模块的产物，构建环境须与 PoC venv 对齐：云端 LLM 栈
+  （langchain-openai/openai/tiktoken）已直 pin 入 requirements.txt（Task 8
+  C1），传递依赖经 `packaging/constraints.txt` 约束（R9），安装命令见 §1.1。
 - `watchdog` 未安装：streamlit 回退 `PollingPathWatcher`（已显式冻结）；
   启动时打印的 "install watchdog" 提示无害，无需捆绑。
 - `nltk` 虽在 requirements 但应用代码未 import，未收集（如未来启用需
@@ -193,6 +202,11 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
    `main()`，多起一个 Streamlit 服务（多占端口、多开浏览器标签）。修复：
    入口检测 `sys.argv` 中的 `-c`，按 CPython 语义 exec 子进程代码后退出。
    开发态恒不触发。CI 冒烟的冻结态 SQLite 探针正利用此通道（§4）。
+3. **早期日志文件 sink（`setup_early_log_sink`，R8）**：端口行在
+   `bootstrap.run` 之前发出，而 app.py 运行时才 `logger.remove()` + 重挂
+   sink——早期 sink（`config.LOG_FILE`，冻结态即 DATA_DIR/logs/app.log，
+   level=DEBUG、safe_log_format）保证端口行先落盘；app.py 重配后端口信息
+   仍在文件。README「实际端口见 logs/app.log」由此成立。
 
 ### 3.5 macOS BUNDLE 布局与行为
 
@@ -216,9 +230,10 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
 - **矩阵**（spec §9-Q4 现代平台）：`macos-latest`（Apple Silicon arm64）/
   `windows-latest`（x64）/ `ubuntu-22.04`（glibc 2.35 下限，兼容较新发行版）。
   Intel Mac/更旧 Linux/Win arm64 留后续。
-- **流程**：checkout → setup-python 3.12（pip 缓存按两个 requirements 哈希）
-  → 导出 `VERSION`（根 VERSION 文件）→ `pip install -r requirements.txt
-  -r requirements-build.txt` → `pyinstaller text2sql.spec --noconfirm` →
+- **流程**：checkout → setup-python 3.12（pip 缓存按两个 requirements +
+  constraints 哈希）→ 导出 `VERSION`（根 VERSION 文件）→ `pip install
+  -r requirements.txt -r requirements-build.txt -c packaging/constraints.txt`
+  （R9：复现 PoC 验证过的传递依赖集）→ `pyinstaller text2sql.spec --noconfirm` →
   OS 安装包（brew create-dmg + dmg.sh / choco innosetup + ISCC / apt 工具 +
   appimage-builder~=1.1.0）→ 冒烟 → upload-artifact。
 - **冒烟边界（无 LLM）**：CI 无 Ollama/云 Key，NL 生成冒烟属人工（macOS PoC
@@ -242,24 +257,51 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
 
 ## 5. PoC 验证清单（macOS arm64，Python 3.12，PyInstaller 6.22.3）
 
-- [x] 终端直跑与 `open`（双击等价）均起服务；`/_stcore/health` = ok。
-- [x] 首页渲染无异常（Streamlit websocket 协议级驱动验证，205+ 元素）。
-- [x] 首跑 DATA_DIR 初始化：`.env` 模板、`semantic_models/` 复制、种子建库
-      （8 业务表 30 行 + 6 应用表，历史种子 50 行，`risk_blacklist` 3 行）。
-- [x] LLM 不可达（`LLM_BASE_URL` 指向拒绝端口）→ 页面渲染 + 错误引导
-      「生成失败：LLM 服务调用失败，请检查模型配置后重试」，不白屏。
-- [x] 应用内模型配置面板保存 → 「LLM 已切换为：Ollama (本地) / gemma4:E4B」；
-      保存持久化到 DATA_DIR/.env（跨重启，Task 4 已加持久化测试）。
-- [x] 端到端：「查询所有黑名单用户」→ `SELECT * FROM risk_blacklist` →
-      执行返回 3 行 → 历史落 `DATA_DIR/text2sql.db`
-      `sql_generation_history`（execution_status=success）。
+**Task 8 从 HEAD 重建后全量重跑**（旧产物早于 Task 4、plist 0.1.0、PYZ 缺
+core.config_persistence，已作废）。重建 77.7s；.app 549MB / onedir 545MB；
+plist=1.0.0；PYZ 含 core.config_persistence，datas model_config.py 含冻结门控。
+验证用隔离 HOME（scratch `build/frozen-home`，platformdirs 经 HOME 展开，
+不触真实用户数据目录）；终端直跑可执行文件（`open` 双击等价路径 Task 3 已
+验证，BUNDLE 布局未变）；live dev 8501 未触碰，冻结实例自 8502 起（占用递增
+实测 8502/8503）。驱动＝websocket 协议级探针（build/st_probe*.py，scratch）。
+
+- [x] 启动即起服务；`/_stcore/health` = ok；首页渲染无异常（207 元素）。
+- [x] 首跑 DATA_DIR 初始化：`.env` 模板（846B）、`semantic_models/` 复制、
+      种子建库（15 表＝8 业务 + 6 应用 + sqlite_sequence，历史种子 50 行，
+      `risk_blacklist` 3 行）。
+- [x] **端口行落 DATA_DIR/logs/app.log（R8/I6）**：早期 sink 在 app.py 重配
+      logging 前写「启动 Streamlit：…（http://127.0.0.1:<端口>）」；验证脚本
+      自该文件读端口（多次重启均命中，含递增端口）。
+- [x] 模型配置面板保存 → 「LLM 已切换为：Ollama (本地) / gemma4:E4B」→
+      **DATA_DIR/.env 原子合并写入**（LLM_BASE_URL=http://localhost:11434
+      可观测，模板原值为空）→ **重启后 system_info 显示持久化 Base URL**
+      （frozen 门控 R7 实证；dev 会话级由单测覆盖）。
+- [x] 未配置引导（`LLM_BASE_URL` 指向拒绝端口，env 注入不改动文件）：
+      首页渲染 + 「首次运行引导」（frozen 文案含「重启不丢失」）+ 生成错误
+      引导「生成失败：LLM 服务调用失败，请检查模型配置后重试」，不白屏。
+- [x] 端到端：「查询所有黑名单用户」→ `SELECT … FROM risk_blacklist`
+      （LLM 输出非确定：SELECT * 或列清单均出现）→ 执行返回 3 行 → 历史落
+      `DATA_DIR/text2sql.db` `sql_generation_history`（execution_status=success）。
+      另实测 LLM 幻觉列名（JOIN users.username 不存在）→ 执行失败被优雅捕获：
+      浏览器仅见脱敏错误编号，app.log 记 error_id/stage/exception_type，
+      历史 execution_status=fail——安全边界与容错路径冻结态完好。
 - [x] faiss（FAISS 索引 dim=1024）、sqlfluff 校验、Ollama embedding（bge-m3）
-      冻结态全链路正常；resource_tracker 子进程不再多起服务。
-- [x] bundle 只读：构建完成后 0 文件改动。
-- [x] dmg 安装包：hdiutil attach 验证卷内容（.app + Applications 链接 +
-      README_FIRST_RUN.txt），UDZO 压缩约 188MB。
-- [x] 开发态回归：1106 passed, 9 skipped（Task 7 文档完成时复核，基线不变）；
-      ruff 零。
+      冻结态全链路正常；冻结态 `-c` 探针（multiprocessing 拦截通道）：
+      FROZEN_SQLITE_OK history_rows=51 risk_blacklist=3 +
+      PERSISTENCE_MODULE_OK，不多起服务。
+- [x] bundle 只读：重建标记后历经首跑/保存/生成/执行/重启/引导/探针，
+      .app 与 onedir 均 **0 文件改动**（`find -type f -newer <标记>` 为空）。
+- [x] dmg 重生成（bash packaging/macos/dmg.sh，完整布局未触发 skip-jenkins）：
+      hdiutil attach 验证卷内容（.app + Applications 链接 +
+      README_FIRST_RUN.txt），卷内 plist=1.0.0、含 config_persistence；
+      UDZO 压缩约 188MB（197,403,761B）。
+- [x] CI 安装命令复现（R9/I5）：scratch venv 全新安装
+      `-r requirements.txt -r requirements-build.txt -c packaging/constraints.txt`
+      成功；云端栈 ChatOpenAI/AzureChatOpenAI 可实例化、tiktoken_ext 可导入、
+      ChatOllama 活体生成「好的」、OllamaEmbeddings dim=1024、应用工厂 import
+      链通过（CI_SMOKE_OK）。langchain 一致组合见 §6。
+- [x] 开发态回归：**1124 passed, 9 skipped**（1106 基线 + 18 新增）；ruff 零；
+      build.yml / AppImageBuilder.yml YAML 合法。
 
 ## 6. 已知限制 / 后续
 
@@ -270,11 +312,23 @@ AppImage `{{ VERSION }}` 模板——四处同源一致。
   减弱，应用仍可用）。
 - **`langchain_anthropic` 未安装** → anthropic 提供商在包内不可用（构建环境
   装上即自动收集）；ollama/openai 系实测可用。
-- **`langchain-openai` 未列入 requirements.txt**（PoC venv 手动装有 0.1.0，
-  spec 收集列表含它）：CI 从 requirements.txt 全新安装不会带上该包，
-  `collect_all("langchain_openai")` 对缺失包仅告警跳过（§3.1）——CI 产物的
-  云端 OpenAI 兼容 LLM 路线（openai/azure/dashscope/deepseek/zhipu）会缺模块，
-  Ollama 默认路线不受影响。补 pin 属构建依赖修订，留待后续裁决（Task 6 遗留）。
+- **构建工具链刻意 pin（Task 8 I4/I5）**：`pyinstaller==6.22.3` +
+  `pyinstaller-hooks-contrib==2026.10`（月度 rev，不 pin 会解析未验证组合）；
+  传递依赖经 `packaging/constraints.txt`（PoC venv 验证闭包）约束。刻意升级
+  任一 pin 须重建产物 + 重跑 §5 frozen PoC 清单复证，并同步更新 constraints。
+  Windows/Linux 专属传递依赖（pefile/pywin32-ctypes/greenlet/watchdog 等）
+  PoC venv 未装、不在 constraints 内，对应 CI 腿自行解析（首跑后如需复现再补录）。
+- **langchain 系 pin 对齐一致组合（Task 8，I5 验证时发现的既有缺陷）**：
+  原 `langchain==0.1.0`/`langchain-community==0.0.10` 声明 `langsmith<0.1.0`，
+  与 `langchain-core==0.1.53` 声明的 `langsmith>=0.1.0` **交集为空**——pip
+  全新解析必然 ResolutionImpossible（PoC venv 系手工装配，langsmith 0.1.147
+  漂移超出前两者声明范围，runtime 实测相容但 pip 无法表达）。已对齐上游
+  0.1.x 末代一致组合 `langchain==0.1.20` + `langchain-community==0.0.38`；
+  core/langsmith/langchain-openai/openai/tiktoken 保持 PoC 验证版本。应用不
+  import 顶层 langchain，community 仅用 ChatOllama（0.0.x API 稳定）。
+  **本地重建产物（共享 venv）含 langchain 0.1.0/community 0.0.10，CI 产物含
+  0.1.20/0.0.38**；差异面经 scratch venv 全新安装 + ChatOllama 活体冒烟核实。
+  新增传递依赖 `langchain-text-splitters==0.0.2`（应用不用 text_splitter）。
 - **Windows/Linux 产物冒烟待首次 CI 运行**（§4 验证状态）；faiss 原生库每 OS
   由 `collect_all`/`collect_dynamic_libs` 自适应（Win 为 .dll/.pyd）。
 - 知识图谱「连接并构建」装载需 Neo4j；SQLite 元数据模式下知识自活体库

@@ -1,4 +1,9 @@
 # 构建期依赖（打包 spec §5.4）——仅打包/CI 构建安装，不属于运行时依赖，
 # 勿并入 requirements.txt。
 # 安装：.venv/bin/python -m pip install -r requirements-build.txt
-pyinstaller>=6,<7
+#     -c packaging/constraints.txt
+# pins＝macOS PoC 实测验证组合（Task 8 I4）：hooks-contrib 为月度 rev，
+# 不 pin 会让 CI 解析未验证组合。刻意升级任一 pin 须重建 + 重跑 frozen
+# PoC 清单复证（docs/packaging.md §5），并同步更新 constraints.txt。
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10

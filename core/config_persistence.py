@@ -6,9 +6,10 @@
 - 同目录临时文件 + os.replace 原子替换：写失败不损坏既有 .env，异常上抛由
   调用方决定降级策略。
 
-位置约定：开发态 DATA_DIR=PROJECT_ROOT/data → 写 data/.env（不碰根目录用户
-.env）；冻结态 DATA_DIR=用户数据目录 → 写用户数据目录/.env。DATA_DIR 在调用时
-动态读取（与 launcher helper 一致），便于测试重定向。
+位置约定：DATA_DIR 在调用时动态读取（与 launcher helper 一致），便于测试重定向；
+冻结态 DATA_DIR=用户数据目录 → 写用户数据目录/.env（不碰根目录用户 .env）。
+调用门控（R7）：app/model_config._persist_config 仅冻结态调用本函数——开发态
+config 只读根 .env，写 data/.env 重启不生效，故开发态配置保持会话级。
 """
 from __future__ import annotations
 
