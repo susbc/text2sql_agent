@@ -5,6 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased] - 2026-11-20（开源协议 Apache 2.0）
+
+### Added
+
+- **开源许可证 Apache 2.0**：新增 `LICENSE`（Apache License 2.0 全文，Copyright 2026 溯算编程）；
+  README 许可证章节由"待定"改为 Apache 2.0 并链接 LICENSE。内置 Fluent Color 图标资产
+  仍适用其原始 Microsoft Fluent UI MIT 许可（第三方资产，已在 README 注明）。
+
 ## [Unreleased] - 2026-11-20（MySQL → SQLite 存储迁移）
 
 ### Changed
