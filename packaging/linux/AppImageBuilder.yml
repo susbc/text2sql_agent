@@ -1,0 +1,82 @@
+# ====================================================================
+# text2sql-agent Linux AppImage 配方（appimage-builder 1.x，打包 spec §5.5）
+# ====================================================================
+# 输入：dist/text2sql-agent/（PyInstaller onedir：text2sql-agent ELF +
+#       _internal/；先在本机/CI 运行 pyinstaller text2sql.spec）。
+# 输出：text2sql-agent-<版本>-linux-x86_64.AppImage（落在调用时 CWD，
+#       按下方步骤 mv 进 dist/）。
+#
+# 构建（仅 Linux，CI Task 6 ubuntu-22.04＝glibc 2.35 下限）：
+#   pip install appimage-builder          # 1.x 语法（本配方经 1.1.0 源码核对）
+#   sudo apt-get install -y squashfs-tools
+#   mkdir -p dist/AppDir
+#   VERSION=1.0.0 appimage-builder \
+#     --recipe packaging/linux/AppImageBuilder.yml \
+#     --appdir dist/AppDir \
+#     --build-dir dist/appimage-build
+#   mv text2sql-agent-*-linux-x86_64.AppImage dist/
+#
+# 注意：
+# - VERSION 环境变量必须导出：{{ VERSION }} 模板在配方解析时求值，缺失即报错。
+# - 构建需网络：自动下载 AppImageKit runtime 与 AppRun（GitHub releases）。
+# - AppDir 由 before_bundle 脚本自 dist 暂存（$SOURCE_DIR＝本配方所在目录，
+#   $TARGET_APPDIR＝--appdir 绝对路径，均由 appimage-builder 注入）。
+# - v1 不签名；用户首跑说明见包内 README_FIRST_RUN.txt。
+# ====================================================================
+version: 1
+
+AppDir:
+  app_info:
+    id: com.susuan.text2sql-agent
+    name: text2sql-agent
+    # 图标名（不带扩展名）：IconBundler 在 usr/share/icons 下找同名 png/svg
+    icon: text2sql-agent
+    version: "{{ VERSION }}"
+    # PyInstaller 启动器 exe（launcher.py 冻结入口），相对 AppDir 根
+    exec: usr/bin/text2sql-agent
+    exec_args: $@
+
+  # --- 自 dist 暂存 AppDir（bash -e 执行，任一失败即中止构建）---
+  before_bundle:
+    # 清理旧暂存，保证幂等重建
+    - rm -rf "$TARGET_APPDIR"
+    - 'test -x "$SOURCE_DIR/../../dist/text2sql-agent/text2sql-agent" || { echo "错误：未找到 dist/text2sql-agent/text2sql-agent，请先运行 pyinstaller text2sql.spec" >&2; exit 1; }'
+    # onedir 全量进 usr/bin（exe 与 _internal/ 同级，PyInstaller 按 exe
+    # 相对路径解析 _internal，勿拆分布局）
+    - mkdir -p "$TARGET_APPDIR/usr/bin"
+    - cp -a "$SOURCE_DIR/../../dist/text2sql-agent/." "$TARGET_APPDIR/usr/bin/"
+    # desktop entry：放 usr/share/applications/<id>.desktop，
+    # DesktopEntryGenerator 会原样采用（补 X-AppImage-* 后写到 AppDir 根）
+    - mkdir -p "$TARGET_APPDIR/usr/share/applications"
+    - |
+      cat > "$TARGET_APPDIR/usr/share/applications/com.susuan.text2sql-agent.desktop" <<'EOF'
+      [Desktop Entry]
+      Type=Application
+      Name=溯算 Text2SQL 智能体
+      Comment=自然语言转 SQL 智能体（内置示例数据，首跑见 README_FIRST_RUN.txt）
+      Exec=text2sql-agent
+      Icon=text2sql-agent
+      Terminal=false
+      Categories=Utility;
+      EOF
+    # 图标（assets/logo_icon.png 128x128）→ IconBundler 搜索路径
+    - mkdir -p "$TARGET_APPDIR/usr/share/icons/hicolor/128x128/apps"
+    - cp "$SOURCE_DIR/../../assets/logo_icon.png" "$TARGET_APPDIR/usr/share/icons/hicolor/128x128/apps/text2sql-agent.png"
+    # 首跑说明随包分发（AppDir 根，--appimage-extract 后可见）
+    - cp "$SOURCE_DIR/../README_FIRST_RUN.txt" "$TARGET_APPDIR/README_FIRST_RUN.txt"
+
+  runtime:
+    # PyInstaller 自包含运行时：usr/bin 整树（exe + _internal 原生库）
+    # 禁止 patchelf/运行时助手改写——bootloader 与 bundled 库自带加载
+    # 逻辑（rpath/_MEIPASS），改写解释器/RPATH 会破坏冻结态。
+    preserve:
+      - usr/bin
+    env:
+      # 显式把 bundle 可执行目录置于 PATH 前（宿主 PATH 保留在后，
+      # webbrowser/xdg-open 等仍用宿主工具）
+      PATH: '$APPDIR/usr/bin:$PATH'
+
+AppImage:
+  arch: x86_64
+  # 输出文件名（落在 CWD；构建后 mv 进 dist/）
+  file_name: text2sql-agent-{{ VERSION }}-linux-x86_64.AppImage

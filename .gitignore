@@ -28,6 +28,15 @@ python_deps/*
 dist/
 build/
 
+# 安装包产物（Task 5：dmg/Inno Setup/AppImage 输出约定落 dist/，已被上面排除；
+# 以下兜底防误提交——appimage-builder 默认 CWD 输出/默认暂存目录、ISCC 默认 Output）
+*.dmg
+*.AppImage
+*.AppImage.zsync
+/AppDir/
+/appimage-build/
+packaging/windows/Output/
+
 # Runtime artifacts
 logs/*.log
 logs/*.log.*
