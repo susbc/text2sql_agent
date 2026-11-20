@@ -103,7 +103,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y squashfs-tools patchelf desktop-file-utils libfuse2 file
-          python -m pip install appimage-builder
+          # 锁 1.x（~=1.1.0）：配方为 1.x 语法且 CLI 经 1.1.0 核对，防未来 2.x 破坏 Linux 腿
+          python -m pip install "appimage-builder~=1.1.0"
 
       - name: Build AppImage (Linux)
         if: matrix.os == 'ubuntu-22.04'
