@@ -16,10 +16,23 @@ from config import (
     LLM_PROVIDERS,
 )
 from core.app_context import ApplicationConfigurationError
+from core.config_persistence import write_env_config
 from core.utils.log_sanitizer import log_safe_exception
 
 
 _CONFIG_LOG_HINT = "详情请查看 logs/app.log 中的错误编号"
+
+
+def _persist_config(updates: dict) -> None:
+    """热重载成功后把配置写入 DATA_DIR/.env，跨重启存活（打包 spec §5.3/Q1）。
+
+    开发态落 data/.env、冻结态落用户数据目录/.env，均不碰根目录用户 .env。
+    持久化失败不回滚本次会话已生效的配置，仅记日志（下次保存可重试）。
+    """
+    try:
+        write_env_config(updates)
+    except Exception as e:
+        log_safe_exception("config_persist", e)
 
 
 def _apply_llm_config(provider: str, model: str, api_key: str, base_url: str) -> tuple[bool, str]:
@@ -48,6 +61,13 @@ def _apply_llm_config(provider: str, model: str, api_key: str, base_url: str) ->
         log_safe_exception("llm_config_reload", e)
         return False, f"LLM 加载失败，{_CONFIG_LOG_HINT}"
     logger.info(f"LLM 配置已更新：{provider}/{model}")
+    # 仅在热重载成功后持久化，跨重启存活（spec §5.3/Q1）
+    _persist_config({
+        "LLM_PROVIDER": provider,
+        "LLM_MODEL": model,
+        "LLM_API_KEY": api_key,
+        "LLM_BASE_URL": base_url,
+    })
     return True, f"{label} / {model}"
 
 
@@ -73,6 +93,12 @@ def _apply_embedding_config(provider: str, model: str, api_key: str) -> tuple[bo
         log_safe_exception("embedding_config_reload", e)
         return False, f"Embedding 加载失败，{_CONFIG_LOG_HINT}"
     logger.info(f"Embedding 配置已更新：{provider}/{model}")
+    # 仅在热重载成功后持久化，跨重启存活（spec §5.3/Q3）
+    _persist_config({
+        "EMBEDDING_PROVIDER": provider,
+        "EMBEDDING_MODEL": model,
+        "EMBEDDING_API_KEY": api_key,
+    })
     return True, f"{label} / {model}"
 
 

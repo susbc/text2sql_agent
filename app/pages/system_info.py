@@ -1,4 +1,7 @@
 """系统信息页面（自 app.py「Tab 4: 系统信息」段迁入）。"""
+import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import streamlit as st
@@ -16,6 +19,44 @@ from config import (
 )
 from core.utils.governance_settings import active_semantic_version
 
+# Ollama 可达性探测超时：仅用于首跑引导，必须短，避免拖慢页面渲染
+_OLLAMA_PROBE_TIMEOUT_SECONDS = 1.0
+
+
+def _ollama_reachable(base_url: str) -> bool:
+    """探测 Ollama 服务是否可达（收到任何 HTTP 响应即视为可达）。
+
+    连接失败/超时一律按不可达处理；探测只为触发引导文案，绝不抛异常。
+    地址回退链与 core/llm_factory._create_local_llm 一致（base_url →
+    OLLAMA_HOST → http://localhost:11434），避免引导误判。
+    """
+    host = base_url or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    url = host.rstrip("/") + "/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=_OLLAMA_PROBE_TIMEOUT_SECONDS) as resp:
+            resp.read(1)
+        return True
+    except urllib.error.HTTPError:
+        # 有 HTTP 响应（哪怕 4xx/5xx）说明服务在监听
+        return True
+    except Exception:
+        return False
+
+
+def _needs_first_run_guidance(active: dict) -> bool:
+    """当前 LLM 路线是否不可用（首跑引导触发条件，打包 spec §5.3）。
+
+    本地 Ollama 路线看服务可达性；云端路线看是否配了 API Key。
+    未知提供商保持目录的宽容语义（不触发引导）。
+    """
+    provider = active.get("llm_provider", "")
+    if provider in ("ollama", "local"):
+        return not _ollama_reachable(active.get("llm_base_url") or "")
+    info = LLM_PROVIDERS.get(provider, {})
+    if info.get("needs_api_key"):
+        return not str(active.get("llm_api_key") or "").strip()
+    return False
+
 
 def show_system_info() -> None:
     ctx = st.session_state.app_context  # 自持：原跨 Tab 依赖 tab1 块内绑定
@@ -29,6 +70,18 @@ def show_system_info() -> None:
     _current_llm_base_url = _active['llm_base_url']
     _current_emb_provider = _active['embedding_provider']
     _current_emb_model = _active['embedding_model']
+
+    # 首跑引导（打包 spec §5.3）：未配置时引导而非崩溃
+    if _needs_first_run_guidance(_active):
+        st.info(
+            "**首次运行引导**：当前模型配置尚不可用。请在下方「模型配置」面板完成配置，"
+            "保存后自动写入本机配置文件（.env），重启不丢失。\n"
+            "- **本地 Ollama（无需 API Key）**：安装并启动 Ollama，然后拉取两个模型："
+            "`ollama pull gemma4:E4B`（LLM）与 `ollama pull bge-m3:latest`（Embedding）。\n"
+            "- **云端 API**：选择云端提供商并填写 API Key；Embedding 建议配 DashScope "
+            "`text-embedding-v3`（可与 LLM 使用同一 Key）。\n"
+            "- 未配置可用 Embedding 时，检索回退为 TF-IDF（降级模式，语义检索质量下降）。"
+        )
 
     # 系统状态卡片
     st.markdown(icon_header("配置信息", "sliders-horizontal", level=4), unsafe_allow_html=True)
