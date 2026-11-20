@@ -1174,7 +1174,7 @@ python scripts/01_export_graph_to_md.py
 
 本项目基于 **[Apache License 2.0](LICENSE)** 开源。
 
-Copyright 2026 溯算编程。完整许可文本见 [LICENSE](LICENSE)。
+Copyright 2026 溯算编程。完整许可文本见 [LICENSE](LICENSE)，第三方归属见 [NOTICE](NOTICE)。
 
 > 第三方资产说明：内置 Fluent Color 图标源自 Microsoft Fluent UI（MIT 许可），
 > 该图标资产适用其原始 MIT 许可；项目其余代码适用 Apache 2.0。

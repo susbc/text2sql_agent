@@ -9,9 +9,10 @@
 
 ### Added
 
-- **开源许可证 Apache 2.0**：新增 `LICENSE`（Apache License 2.0 全文，Copyright 2026 溯算编程）；
-  README 许可证章节由"待定"改为 Apache 2.0 并链接 LICENSE。内置 Fluent Color 图标资产
-  仍适用其原始 Microsoft Fluent UI MIT 许可（第三方资产，已在 README 注明）。
+- **开源许可证 Apache 2.0**：新增 `LICENSE`（Apache License 2.0 全文，Copyright 2026 溯算编程）
+  与 `NOTICE`（第三方归属：Fluent UI System Icons MIT 全文 + Python 依赖各自许可说明）；
+  README 许可证章节由"待定"改为 Apache 2.0 并链接 LICENSE/NOTICE。内置 Fluent Color 图标资产
+  仍适用其原始 Microsoft Fluent UI MIT 许可（第三方资产，已在 README/NOTICE 注明）。
 
 ## [Unreleased] - 2026-11-20（MySQL → SQLite 存储迁移）
 
