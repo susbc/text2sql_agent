@@ -1,0 +1,4 @@
+# 构建期依赖（打包 spec §5.4）——仅打包/CI 构建安装，不属于运行时依赖，
+# 勿并入 requirements.txt。
+# 安装：.venv/bin/python -m pip install -r requirements-build.txt
+pyinstaller>=6,<7

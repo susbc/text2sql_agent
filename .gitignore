@@ -24,6 +24,10 @@ python_deps/*
 .idea/
 .worktrees/
 
+# PyInstaller 构建产物（text2sql.spec 本身入库；dist/build 不入库）
+dist/
+build/
+
 # Runtime artifacts
 logs/*.log
 logs/*.log.*

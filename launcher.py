@@ -189,12 +189,40 @@ def launch_streamlit() -> None:
         # 打包态不监视 bundle 文件变更；桌面应用不上报使用统计
         "server_fileWatcherType": "none",
         "browser_gatherUsageStats": False,
+        # 冻结态 streamlit/config.py 的 __file__ 不含 "site-packages"，
+        # global.developmentMode 会被误判为 True，与 server.port 冲突触发
+        # AssertionError（_check_conflicts）。显式关闭，开发态同值无副作用。
+        "global_developmentMode": False,
     }
     bootstrap.load_config_options(flag_options)
     logger.info("启动 Streamlit：{}（http://127.0.0.1:{}）", main_script, port)
     _open_browser_when_ready(port)
     # 阻塞直至服务关闭（信号处理器负责停机）
     bootstrap.run(str(main_script), None, [], flag_options)
+
+
+def _exec_multiprocessing_child() -> bool:
+    """冻结态拦截 multiprocessing 子进程调用（PyInstaller hook 修复）。
+
+    CPython multiprocessing（spawn / resource_tracker）以
+    `sys.executable -B -S -I -c <code>` 拉起子进程；PyInstaller 冻结 exe 不支持
+    -c 旗标，会重新执行入口脚本——若不拦截，sqlfluff 校验触发的
+    resource_tracker 子进程将再跑一遍 main()，多起一个 Streamlit 服务（多占
+    端口、多开浏览器标签）。此处按 CPython 语义执行 -c 代码并返回 True，
+    调用方随即退出；开发态恒返回 False（行为逐字不变）。
+    """
+    if not is_frozen():
+        return False
+    argv = sys.argv[1:]
+    if "-c" not in argv:
+        return False
+    idx = argv.index("-c")
+    if idx + 1 >= len(argv):
+        return False
+    code = argv[idx + 1]
+    sys.argv = ["-c"] + argv[idx + 2:]
+    exec(compile(code, "<string>", "exec"), {"__name__": "__main__"})
+    return True
 
 
 def main() -> None:
@@ -207,4 +235,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if not _exec_multiprocessing_child():
+        main()
