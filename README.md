@@ -407,7 +407,104 @@ Neo4j Driver Pool
    └─ connection_timeout = 30s
 ```
 
+## 📦 下载安装（桌面安装包）
+
+v1 提供 macOS / Windows / Linux 三平台安装包：双击启动本地服务并自动打开浏览器，
+无需安装 Python。形态为 PyInstaller onedir + 每 OS 安装包，构建指南见
+[docs/packaging.md](docs/packaging.md)。
+
+> **v1 定位**：自带示例数据的自包含演示版——内置 8 张业务表、30 条示例记录
+> （`data/seed_business.sql`），启动后即可提问（如「查询所有黑名单用户」），
+> 无需安装任何数据库服务。**并非完全 turnkey**：包体不捆绑大模型，需按下方
+> 前提准备本地 Ollama 或云端 API Key。v1 不引导把 `SQLITE_PATH` 指向任意自有库
+> （避免种子注入污染）；接入自有数据属高级/后续能力（知识图谱 + 外部 Neo4j）。
+
+### 获取安装包
+
+安装包由 GitHub Actions 三 OS 矩阵构建（`.github/workflows/build.yml`，
+tag `v*` 推送或手动触发；版本号单一事实源＝仓库根 `VERSION` 文件）：
+
+| 平台 | 产物 | 说明 |
+|------|------|------|
+| macOS（Apple Silicon arm64） | `text2sql-agent-<版本>-macos-arm64.dmg` | 拖入 Applications 安装 |
+| Windows x64 | `text2sql-agent-<版本>-windows-x64-setup.exe` | Inno Setup 向导安装 |
+| Linux x86_64 | `text2sql-agent-<版本>-linux-x86_64.AppImage` | Ubuntu 22.04 构建，要求 glibc ≥ 2.35 |
+
+当前 CI 产物上传至 GitHub Actions Artifacts（保留 14 天，含安装包与 onedir
+目录）；附到 GitHub Releases 的发布流程为后续工作（现有 workflow 尚无 release
+发布步骤）。每个安装包内附 `README_FIRST_RUN.txt` 首跑说明。Intel Mac /
+Windows arm64 / 更旧 Linux 留后续。
+
+### 前提（LLM / Embedding，二选一）
+
+应用本身不捆绑大模型，首次运行前请准备任一路线：
+
+- **路线 A：本地 Ollama（无需 API Key）**——安装并启动 [Ollama](https://ollama.com)，
+  拉取两个模型（缺一不可）：
+
+  ```bash
+  ollama pull gemma4:E4B      # LLM：负责 SQL 生成
+  ollama pull bge-m3:latest   # Embedding：负责语义检索
+  ```
+
+  默认地址 http://localhost:11434，本机运行无需修改。
+- **路线 B：云端 API Key**——在「模型配置」面板选择云端提供商（DashScope 通义千问 /
+  OpenAI / DeepSeek / 智谱 AI / Azure OpenAI）并填写 API Key；Embedding 建议配
+  DashScope `text-embedding-v3`（可与 LLM 用同一 Key）。
+- **降级模式（如实说明）**：无 Ollama 且未配云端 Embedding 时，检索自动回退
+  TF-IDF 关键词匹配——语义检索质量下降，应用仍可用（`core/embedding_factory.py`
+  的降级路径）。
+- **可选 Neo4j**：图谱增强检索默认关闭、非必需；需要时自备外部 Neo4j 服务，
+  在数据目录 `.env` 设 `NEO4J_ENABLED=true` 并填写
+  `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD`。
+- 注意：v1 安装包未包含 Anthropic (Claude) 提供商（未捆绑 `langchain_anthropic`）。
+
+### 安装与首跑向导
+
+- **macOS**：打开 .dmg，把 `text2sql-agent.app` 拖入 Applications。v1 未签名，
+  首次打开会提示「无法验证开发者」，绕过方法（任选其一）：
+  右键（或 Control+点按）应用 →「打开」→ 弹窗中再点「打开」；
+  或「系统设置 → 隐私与安全性」→ 找到拦截提示 →「仍要打开」。
+- **Windows**：双击 setup.exe 按向导安装（默认 `C:\Program Files\text2sql-agent`）。
+  v1 未签名，SmartScreen 提示「Windows 已保护你的电脑」时，
+  点「更多信息」→「仍要运行」。用桌面/开始菜单快捷方式启动。
+- **Linux**：`chmod +x text2sql-agent-<版本>-linux-x86_64.AppImage` 后直跑；
+  需要 FUSE（缺 libfuse2 可安装之，或改用 `--appimage-extract-and-run`）。
+
+启动后自动打开浏览器（http://127.0.0.1:8501；端口被占用时自动递增，以实际打开
+的地址为准，实际端口见 `logs/app.log`）。首跑自动创建数据目录、写入 `.env`
+默认模板、复制语义模型，并用内置种子数据建立 SQLite 库（幂等，重复启动不会
+重复导入）。「系统信息」页出现「首次运行引导」时，在「模型配置」面板分别配置
+LLM 与 Embedding（Ollama 或云端 Key），保存后自动写入数据目录 `.env`，
+**跨重启不丢失**；也可直接编辑数据目录中的 `.env`，修改后重启应用生效。
+
+### 数据目录（安装包本体只读）
+
+| OS | 路径 |
+|----|------|
+| macOS | `~/Library/Application Support/text2sql-agent` |
+| Windows | `%LOCALAPPDATA%\text2sql-agent`（通常即 `C:\Users\<用户名>\AppData\Local\text2sql-agent`） |
+| Linux | `~/.local/share/text2sql-agent` |
+
+内容：`.env`（配置，首跑模板生成，已有配置绝不覆盖）、`text2sql.db`（SQLite：
+示例数据 + 查询历史 + 应用元数据）、`logs/app.log`（运行日志）、
+`semantic_models/`（语义模型，首跑自安装包复制）、`index_cache/`（检索索引缓存，
+可选）。卸载不会删除数据目录；如需彻底清理请手动删除。停止：v1 无原生退出
+菜单，关闭浏览器标签后结束应用进程即可（macOS 右键 Dock 图标→退出；Windows
+任务管理器结束 text2sql-agent.exe；Linux Ctrl+C 或 kill）。
+
+### 已知限制（v1）
+
+- 未签名/未公证（OS 警告按上文方法绕过）；不自动更新。
+- 包体约 549MB（macOS .app 实测；dmg 压缩后约 188MB）。
+- LLM 前提如上——非完全 turnkey（不捆绑 Ollama/模型/Neo4j）。
+- Anthropic 提供商暂缺（`langchain_anthropic` 未捆绑，构建环境装上即自动收集）。
+- 浏览器形态（非原生 GUI 窗口）；语义治理为 mysql-only 休眠能力，v1 SQLite
+  演示模式下不可启用。
+
 ## 🚀 快速开始
+
+> 桌面安装包用户请看上方「下载安装」章节；本节面向源码运行与开发。
 
 ### 1. 环境准备
 
