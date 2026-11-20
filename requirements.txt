@@ -28,6 +28,7 @@ streamlit==1.29.0
 
 # Utilities
 python-dotenv==1.0.0
+platformdirs>=4  # 冻结态（PyInstaller）用户数据目录解析
 pydantic==2.5.2
 pydantic-settings==2.1.0
 PyYAML>=6.0,<7

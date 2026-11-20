@@ -3,8 +3,10 @@
 包含数据库配置、Neo4j 配置、LangChain 配置等
 """
 import os
+import sys
 from pathlib import Path
 
+import platformdirs
 from dotenv import load_dotenv
 
 from core.config_validation import (
@@ -19,15 +21,28 @@ from core.config_validation import (
 # 来校验"提供商是否需要 API Key"。
 from core.provider_catalog import EMBEDDING_PROVIDERS, LLM_PROVIDERS
 
-# 加载环境变量
-load_dotenv()
-
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent
 
+# 冻结态（PyInstaller 打包）数据目录：重定向到可写的用户数据目录
+# （Win %LOCALAPPDATA%、Mac ~/Library/Application Support、Linux ~/.local/share）；
+# 开发态保持 PROJECT_ROOT/data 不变（打包 spec §5.1）。
+_FROZEN = getattr(sys, "frozen", False)
+DATA_DIR = (
+    Path(platformdirs.user_data_dir("text2sql-agent"))
+    if _FROZEN
+    else PROJECT_ROOT / "data"
+)
+
+# 加载环境变量：冻结态从 DATA_DIR/.env 读取；开发态保持原有 load_dotenv() 行为。
+if _FROZEN:
+    load_dotenv(DATA_DIR / ".env")
+else:
+    load_dotenv()
+
 # ==================== SQLite 配置 ====================
 # 单文件库；":memory:" 亦受支持（测试/临时场景）。
-SQLITE_PATH = os.getenv("SQLITE_PATH", str(PROJECT_ROOT / "data" / "text2sql.db"))
+SQLITE_PATH = os.getenv("SQLITE_PATH", str(DATA_DIR / "text2sql.db"))
 
 # ==================== Neo4j 配置 ====================
 NEO4J_ENABLED = parse_env_bool("NEO4J_ENABLED", False)
@@ -70,7 +85,7 @@ FAISS_ENABLED = parse_env_bool("FAISS_ENABLED", True)
 FAISS_EMBEDDING_DIM = parse_env_int("FAISS_EMBEDDING_DIM", 1024)  # bge-m3 dense 维度
 FAISS_INDEX_TYPE = os.getenv("FAISS_INDEX_TYPE", "flat")  # flat, ivf, hnsw
 INDEX_CACHE_ENABLED = parse_env_bool("INDEX_CACHE_ENABLED", False)
-INDEX_CACHE_DIR = os.getenv("INDEX_CACHE_DIR", str(PROJECT_ROOT / "data" / "index_cache"))
+INDEX_CACHE_DIR = os.getenv("INDEX_CACHE_DIR", str(DATA_DIR / "index_cache"))
 
 # ==================== Embedding 配置 ====================
 # 通义千问 Embedding 模型配置
@@ -106,7 +121,11 @@ SQL_BLOCKED_TABLES = [
 SEMANTIC_GOVERNANCE_ENABLED = parse_env_bool(
     "SEMANTIC_GOVERNANCE_ENABLED", False
 )
-SEMANTIC_MODEL_DIR = os.getenv("SEMANTIC_MODEL_DIR", "semantic_models")
+# 开发态默认保持相对路径 "semantic_models"（逐字不变）；冻结态落到 DATA_DIR。
+SEMANTIC_MODEL_DIR = os.getenv(
+    "SEMANTIC_MODEL_DIR",
+    str(DATA_DIR / "semantic_models") if _FROZEN else "semantic_models",
+)
 SEMANTIC_DATASOURCE = os.getenv("SEMANTIC_DATASOURCE", "default")
 SEMANTIC_CONTEXT_MAX_CHARS = parse_env_int("SEMANTIC_CONTEXT_MAX_CHARS", 2400)
 SEMANTIC_CONTEXT_MAX_ITEMS = parse_env_int("SEMANTIC_CONTEXT_MAX_ITEMS", 24)
@@ -126,7 +145,7 @@ GOVERNED_HISTORY_BINDING_TTL_SECONDS = parse_env_float(
 
 # ==================== 日志配置 ====================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_FILE = PROJECT_ROOT / "logs" / "app.log"
+LOG_FILE = DATA_DIR / "logs" / "app.log" if _FROZEN else PROJECT_ROOT / "logs" / "app.log"
 
 # ==================== 应用配置 ====================
 STREAMLIT_SERVER_PORT = parse_env_int("STREAMLIT_SERVER_PORT", 8501)
