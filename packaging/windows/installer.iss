@@ -43,9 +43,10 @@ OutputDir=..\..\dist
 OutputBaseFilename=text2sql-agent-{#VERSION}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
-; v1 仅支持 x64（CI windows-latest；Win arm64 留后续）
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+; v1 仅支持 x64（CI windows-latest；Win arm64 留后续）。
+; Inno Setup 6.3+ 弃用裸 x64（告警），改用 x64compatible（含 x64 与兼容 ARM64 模拟）。
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ; 升级安装时若应用正在运行，提示关闭（Restart Manager）

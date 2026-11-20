@@ -1,0 +1,299 @@
+# ====================================================================
+# text2sql-agent 三 OS 构建矩阵（打包 spec §5.6 / §9-Q4，Task 6）
+# ====================================================================
+# 触发：tag v* / 手动 workflow_dispatch。v1 不签名/不公证。
+# matrix：macos-latest（Apple Silicon arm64）/ windows-latest（x64）/
+#         ubuntu-22.04（glibc 2.35 下限，兼容较新发行版）。
+# 流程：setup-python 3.12 → pip install requirements(+build) →
+#       pyinstaller text2sql.spec → OS 安装包（dmg.sh / ISCC installer.iss /
+#       appimage-builder）→ 冒烟 → upload-artifact（安装包 + dist onedir）。
+#
+# 版本单一事实源＝仓库根 VERSION 文件：本 workflow 读出并导出 VERSION 环境
+# 变量（iss GetEnv("VERSION") / AppImageBuilder {{ VERSION }} 模板）；
+# dmg.sh 与 text2sql.spec（plist）直接读文件。四处同源一致。
+#
+# 冒烟边界（R6/T5）：CI 无 Ollama/云 Key，NL 生成冒烟属人工（docs/packaging.md）。
+# CI 冒烟＝冻结产物 launch + /_stcore/health=ok + 首页 HTTP 200 静态渲染 +
+# 无 LLM 的冻结态 SQLite 直查探针（经 launcher multiprocessing -c 拦截）。
+# Linux 冒烟直跑 AppImage（FUSE），同时验证 runtime.preserve 未破坏 ELF、
+# desktop Exec 裸名经 AppRun PATH 可解析；FUSE 不可用时回退 extract-and-run。
+# ====================================================================
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash  # 三 OS 统一 bash（Windows 用 Git Bash），冒烟脚本跨平台同文
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false  # 单 OS 失败不拖累其余两 OS 产物
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_suffix: macos-arm64
+            installer_glob: dist/*.dmg
+          - os: windows-latest
+            artifact_suffix: windows-x64
+            installer_glob: dist/*-windows-x64-setup.exe
+          - os: ubuntu-22.04
+            artifact_suffix: linux-x86_64
+            installer_glob: dist/*.AppImage
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Export VERSION（单一事实源＝根 VERSION 文件）
+        run: echo "VERSION=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: PyInstaller build
+        run: pyinstaller text2sql.spec --noconfirm
+
+      # --- OS 专属安装包 ---
+      - name: Install create-dmg (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install create-dmg
+
+      - name: Build dmg (macOS)
+        if: matrix.os == 'macos-latest'
+        # dmg.sh 自读根 VERSION 文件；CI 无 GUI，Finder 美化失败自动 --skip-jenkins
+        run: bash packaging/macos/dmg.sh
+
+      - name: Install Inno Setup (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install innosetup -y --no-progress
+
+      - name: Build setup.exe (Windows)
+        if: matrix.os == 'windows-latest'
+        # ISCC 经 GetEnv("VERSION") 取上面导出的版本；choco 未加 PATH 时用默认安装路径
+        run: |
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          if command -v iscc >/dev/null 2>&1; then ISCC=iscc; fi
+          "$ISCC" packaging/windows/installer.iss
+
+      - name: Install AppImage tooling (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        # squashfs-tools=mksquashfs；patchelf/desktop-file-utils=appimage-builder 依赖；
+        # libfuse2=AppImage type2 runtime 直跑（冒烟）；file=ELF 识别
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools patchelf desktop-file-utils libfuse2 file
+          python -m pip install appimage-builder
+
+      - name: Build AppImage (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        # 配方 {{ VERSION }} 模板在解析时求值，依赖上面导出的 VERSION 环境变量；
+        # 输出落 CWD，按配方约定 mv 进 dist/（调用方式经 appimage-builder 1.1.0 核对）
+        run: |
+          mkdir -p dist/AppDir
+          appimage-builder \
+            --recipe packaging/linux/AppImageBuilder.yml \
+            --appdir dist/AppDir \
+            --build-dir dist/appimage-build
+          mv text2sql-agent-*-linux-x86_64.AppImage dist/
+          chmod +x dist/*.AppImage
+
+      # --- 冒烟（无需 LLM）：launch + health + 首页渲染 + 冻结态 SQLite 直查 ---
+      # 本脚本已在 macOS PoC 产物上本地验证（health=ok / home=200 /
+      # FROZEN_SQLITE_OK）。端口优先读 launcher 日志（占用递增不误认他服务），
+      # 无日志时回退扫描 8501..8510（CI 全新 runner，8501 空闲）。
+      - name: Smoke (launch + health + render + SQLite probe)
+        env:
+          BROWSER: "true"  # 抑制 launcher 自动开浏览器（headless CI）
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import re
+          import signal
+          import subprocess
+          import sys
+          import time
+          import urllib.request
+
+          TIMEOUT = 240  # 冻结首启需导入 faiss/sklearn/streamlit 等重依赖
+
+          if sys.platform == "darwin":
+              exe = os.path.join("dist", "text2sql-agent.app", "Contents", "MacOS", "text2sql-agent")
+          elif sys.platform == "win32":
+              exe = os.path.join("dist", "text2sql-agent", "text2sql-agent.exe")
+          else:
+              candidates = sorted(glob.glob(os.path.join("dist", "*.AppImage")))
+              if not candidates:
+                  sys.exit("SMOKE FAIL: dist/*.AppImage not found")
+              exe = candidates[0]
+          if not os.path.exists(exe):
+              sys.exit(f"SMOKE FAIL: artifact not found: {exe}")
+
+          log = open("smoke-server.log", "wb")
+
+          def launch(extra_args=()):
+              kwargs = {"stdout": log, "stderr": subprocess.STDOUT}
+              if os.name == "posix":
+                  kwargs["start_new_session"] = True  # 独立进程组，便于整树终止
+              return subprocess.Popen([exe, *extra_args], **kwargs)
+
+          def stop(proc):
+              if proc.poll() is None:
+                  if os.name == "nt":
+                      subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], check=False)
+                  else:
+                      try:
+                          os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                      except ProcessLookupError:
+                          pass
+              try:
+                  proc.wait(timeout=20)
+              except subprocess.TimeoutExpired:
+                  if os.name == "posix":
+                      try:
+                          os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                  proc.wait(timeout=10)
+
+          def tail_log(n=40):
+              log.flush()
+              try:
+                  with open("smoke-server.log", "rb") as f:
+                      return "\n".join(f.read().decode("utf-8", "replace").splitlines()[-n:])
+              except OSError:
+                  return "<no log>"
+
+          def logged_port():
+              log.flush()
+              try:
+                  with open("smoke-server.log", "rb") as f:
+                      m = re.search(rb"http://127\.0\.0\.1:(\d+)", f.read())
+                  return int(m.group(1)) if m else None
+              except OSError:
+                  return None
+
+          def health(port):
+              try:
+                  with urllib.request.urlopen(f"http://127.0.0.1:{port}/_stcore/health", timeout=3) as r:
+                      return r.status == 200 and r.read().decode().strip() == "ok"
+              except Exception:
+                  return False
+
+          def wait_port(proc, deadline):
+              while time.monotonic() < deadline:
+                  if proc.poll() is not None:
+                      return None
+                  port = logged_port()
+                  if port:
+                      return port
+                  time.sleep(1)
+              return None
+
+          proc = launch()
+          port = wait_port(proc, time.monotonic() + TIMEOUT)
+          if port is None and sys.platform.startswith("linux") and proc.poll() is not None:
+              # FUSE 不可用（缺 libfuse2/无 /dev/fuse）→ 解包直跑回退（仍跑同一 ELF）
+              print("AppImage FUSE launch failed; retry --appimage-extract-and-run", flush=True)
+              proc = launch(["--appimage-extract-and-run"])
+              port = wait_port(proc, time.monotonic() + TIMEOUT)
+          if port is None:
+              # 无日志回退：扫描 8501..8510（CI 全新 runner，8501 空闲）
+              deadline = time.monotonic() + 60
+              while port is None and time.monotonic() < deadline and proc.poll() is None:
+                  for p in range(8501, 8511):
+                      if health(p):
+                          port = p
+                          break
+                  if port is None:
+                      time.sleep(2)
+          if port is None:
+              print("SMOKE FAIL: no port detected\n" + tail_log(), flush=True)
+              stop(proc)
+              sys.exit(1)
+
+          deadline = time.monotonic() + TIMEOUT
+          while time.monotonic() < deadline and not health(port):
+              if proc.poll() is not None:
+                  print("SMOKE FAIL: artifact exited early\n" + tail_log(), flush=True)
+                  sys.exit(1)
+              time.sleep(2)
+          if not health(port):
+              print(f"SMOKE FAIL: health not ok on port {port}\n" + tail_log(), flush=True)
+              stop(proc)
+              sys.exit(1)
+
+          with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=15) as r:
+              body = r.read().decode("utf-8", "replace")
+              if r.status != 200 or "streamlit" not in body.lower():
+                  print(f"SMOKE FAIL: home status={r.status}", flush=True)
+                  stop(proc)
+                  sys.exit(1)
+          print(f"SMOKE OK: health=ok home=200 port={port}", flush=True)
+          stop(proc)
+          log.close()
+
+          # --- 冻结态 SQLite 直查探针（无 LLM）：launcher 的 multiprocessing -c
+          # 拦截在冻结环境内执行 Python，对 bundled 种子库做只读 COUNT 查询 ---
+          probe = (
+              "import config\n"
+              "from core.history.sqlite_client import SQLiteClient\n"
+              "c = SQLiteClient(config.SQLITE_PATH)\n"
+              "assert c.connect(), 'sqlite connect failed'\n"
+              "n = c.execute_query('SELECT COUNT(*) AS n FROM sql_generation_history', "
+              "raise_on_error=True)[0]['n']\n"
+              "assert n > 0, 'history seed empty'\n"
+              "b = c.execute_query('SELECT COUNT(*) AS n FROM transaction_record', "
+              "raise_on_error=True)[0]['n']\n"
+              "assert b > 0, 'business seed empty'\n"
+              "print('FROZEN_SQLITE_OK history_rows=%s business_rows=%s' % (n, b))\n"
+          )
+          r = subprocess.run([exe, "-c", probe], capture_output=True, timeout=300)
+          sys.stdout.write(r.stdout.decode("utf-8", "replace"))
+          sys.stderr.write(r.stderr.decode("utf-8", "replace"))
+          if r.returncode != 0:
+              print(f"SMOKE FAIL: frozen sqlite probe exit={r.returncode}", flush=True)
+              sys.exit(1)
+          print("SMOKE OK: frozen sqlite probe passed", flush=True)
+          PY
+
+      - name: Upload smoke logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-${{ matrix.artifact_suffix }}
+          path: smoke-*.log
+          if-no-files-found: ignore
+
+      # macOS 的 .app 与 dmg 内容重复，不再单独上传；dist/text2sql-agent/ 为
+      # 三 OS 通用 onedir 产物（exe + _internal），供无安装包场景直接运行。
+      - name: Upload installer + dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: text2sql-agent-${{ env.VERSION }}-${{ matrix.artifact_suffix }}
+          path: |
+            ${{ matrix.installer_glob }}
+            dist/text2sql-agent/
+          if-no-files-found: error
+          retention-days: 14

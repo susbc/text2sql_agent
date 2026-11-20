@@ -32,6 +32,15 @@ from PyInstaller.utils.hooks import (
 
 PROJECT_ROOT = Path(SPECPATH)
 
+# 版本号单一事实源＝仓库根 VERSION 文件（Task 6）：dmg.sh 直接读文件，
+# CI 导出 VERSION 环境变量供 iss/AppImage 配方，此处 plist 同源，四处一致。
+_VERSION_FILE = PROJECT_ROOT / "VERSION"
+APP_VERSION = (
+    _VERSION_FILE.read_text(encoding="utf-8").strip()
+    if _VERSION_FILE.is_file()
+    else "1.0.0"
+)
+
 datas = []
 binaries = []
 hiddenimports = []
@@ -223,8 +232,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "text2sql-agent",
         "CFBundleDisplayName": "溯算 Text2SQL 智能体",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": APP_VERSION,
+        "CFBundleVersion": APP_VERSION,
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
         "LSApplicationCategoryType": "public.app-category.developer-tools",
