@@ -229,8 +229,12 @@ def test_get_cached_update_passive(monkeypatch):
     assert update_checker.get_cached_update() == sentinel
 
 
-class _StopLoop(Exception):
-    """同步测试中用于跳出无限循环。"""
+class _StopLoop(BaseException):
+    """同步测试中用于跳出无限循环。
+
+    继承 BaseException（而非 Exception）：循环对 sleep 的 except Exception 降级
+    兜底不应吞掉测试的控制流信号；真实错误（如 OverflowError）仍被捕获降级。
+    """
 
 
 def _run_loop_once(monkeypatch, *, check_result=None, check_exc=None, hours=6):
@@ -291,3 +295,57 @@ def test_loop_no_update_clears_cache(monkeypatch):
         update_checker._cache = {"latest_version": "0.0.1", "url": "u", "name": "n"}
     _run_loop_once(monkeypatch, check_result=None)
     assert update_checker.get_cached_update() is None
+
+
+@pytest.mark.parametrize("failure", ["construct", "start"])
+def test_start_update_checker_thread_failure_degrades_and_retries(monkeypatch, failure):
+    """线程构造/start 失败：不抛、_started 回滚 False、资源恢复后重试成功。
+
+    回归 IMPORTANT：_started 在 start() 前置 True，若 start 抛 RuntimeError
+    （资源耗尽 can't start new thread）不得把异常透传到 bootstrap/UI，且不得
+    永久锁死检查器——后续 initialize_system 应能重试。
+    """
+    monkeypatch.setattr(config, "UPDATE_CHECK_ENABLED", True)
+    thread_cls = mock.MagicMock()
+    error = RuntimeError("can't start new thread")
+    if failure == "construct":
+        thread_cls.side_effect = error
+    else:
+        thread_cls.return_value.start.side_effect = error
+    monkeypatch.setattr(update_checker.threading, "Thread", thread_cls)
+
+    update_checker.start_update_checker()  # 不得向 bootstrap/UI 抛异常
+    assert update_checker._started is False
+
+    # 资源恢复后再次调用应重试（重新构造线程）
+    thread_cls.side_effect = None
+    thread_cls.return_value.start.side_effect = None
+    update_checker.start_update_checker()
+    assert thread_cls.call_count == 2
+    assert update_checker._started is True
+
+
+def test_loop_sleep_overflow_degrades_gracefully(monkeypatch):
+    """time.sleep 溢出（超大间隔）：循环不抛、安全退出，检查结果已入缓存。
+
+    回归 MINOR：sleep 原在 try/except 之外，OverflowError 会静默杀死循环。
+    """
+    sentinel = {"latest_version": "9.9.9", "url": "u", "name": "n"}
+    monkeypatch.setattr(config, "APP_VERSION", "1.0.0")
+    monkeypatch.setattr(config, "UPDATE_GITHUB_REPO", "susbc/text2sql_agent")
+    monkeypatch.setattr(config, "UPDATE_CHECK_INTERVAL_HOURS", 6)
+    monkeypatch.setattr(update_checker, "check_for_update", lambda current, repo: sentinel)
+
+    def overflow_sleep(seconds):
+        raise OverflowError("timestamp out of range for platform time_t")
+
+    monkeypatch.setattr(update_checker.time, "sleep", overflow_sleep)
+    update_checker._checker_loop()  # 不得抛
+    assert update_checker.get_cached_update() == sentinel
+
+
+def test_loop_interval_upper_cap(monkeypatch):
+    """超大正间隔钳制到上限（防 hours*3600 溢出），且远小于 time_t 上限。"""
+    events = _run_loop_once(monkeypatch, check_result=None, hours=10**15)
+    assert events[1] == ("sleep", update_checker._MAX_INTERVAL_HOURS * 3600)
+    assert events[1][1] < 2**31

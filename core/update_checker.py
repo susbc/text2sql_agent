@@ -22,6 +22,9 @@ _started = False
 
 # 间隔配置 <=0 时的兜底默认（小时），避免 busy-loop。
 _DEFAULT_INTERVAL_HOURS = 6
+# 间隔上限（小时）：防超大正配置使 hours*3600 溢出 time.sleep（OverflowError）。
+# 取 1 年——任何现实配置都放行，仅钳制病态值；秒数远小于平台 time_t 上限。
+_MAX_INTERVAL_HOURS = 24 * 365
 
 
 def parse_version(s: str) -> tuple[int, ...] | None:
@@ -115,6 +118,7 @@ def _checker_loop() -> None:
         hours = config.UPDATE_CHECK_INTERVAL_HOURS
         if hours <= 0:
             hours = _DEFAULT_INTERVAL_HOURS
+        hours = min(hours, _MAX_INTERVAL_HOURS)
         try:
             update = check_for_update(config.APP_VERSION, config.UPDATE_GITHUB_REPO)
         except Exception as exc:
@@ -123,7 +127,12 @@ def _checker_loop() -> None:
             update = None
         with _lock:
             _cache = update
-        time.sleep(hours * 3600)
+        try:
+            time.sleep(hours * 3600)
+        except Exception as exc:
+            # sleep 溢出/异常：安全退出循环（降级为不检查），不抛、不 busy-loop
+            logger.debug(f"更新检查休眠失败（退出循环，降级为不检查）: {exc}")
+            break
 
 
 def start_update_checker() -> None:
@@ -136,8 +145,14 @@ def start_update_checker() -> None:
         if _started:
             return
         _started = True
-    thread = threading.Thread(target=_checker_loop, name="update-checker", daemon=True)
-    thread.start()
+    try:
+        threading.Thread(target=_checker_loop, name="update-checker", daemon=True).start()
+    except Exception as exc:
+        # 线程启动失败（如资源耗尽）：回滚标记以便后续重试，绝不向 bootstrap/UI 抛
+        with _lock:
+            _started = False
+        logger.debug(f"更新检查线程启动失败（降级为不检查）: {exc}")
+        return
     logger.debug("更新检查后台线程已启动")
 
 

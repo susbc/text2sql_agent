@@ -5,6 +5,8 @@ UPDATE_* 默认值：启用 True / 间隔 6 小时 / 仓库 susbc/text2sql_agent
 reload 副作用沿用 test_frozen_paths 模式：finally 中 reload(config) 恢复开发态。
 """
 import importlib
+import importlib.util
+import shutil
 from pathlib import Path
 
 import dotenv
@@ -57,3 +59,33 @@ def test_update_config_defaults(monkeypatch):
             assert config.UPDATE_GITHUB_REPO == "susbc/text2sql_agent"
     finally:
         importlib.reload(config)
+
+
+def _load_config_copy(directory: Path):
+    """把 config.py 复制到 directory 并以独立模块名加载，模拟冻结态 bundle 布局。
+
+    冻结态 VERSION 由 spec datas 收集到 config.py 同级（_internal），故
+    APP_VERSION 走同一 `Path(__file__).parent / "VERSION"` 路径即可读。
+    importlib.reload 会经 meta_path 重新定位真实 config.py（重置 __file__），
+    无法用 monkeypatch __file__+reload 模拟；改为加载副本，既跑真实解析代码，
+    又不改动真实 config 模块（无需 reload 恢复）。
+    """
+    shutil.copy(Path(config.__file__), directory / "config.py")
+    spec = importlib.util.spec_from_file_location("_config_frozen_probe", directory / "config.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_app_version_frozen_reads_bundled_version(tmp_path):
+    """冻结态：config.py 与 VERSION 同在 bundle 目录，APP_VERSION 同路径可读。"""
+    (tmp_path / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+    module = _load_config_copy(tmp_path)
+    assert module.PROJECT_ROOT == tmp_path
+    assert module.APP_VERSION == "9.9.9"
+
+
+def test_app_version_frozen_missing_fallback(tmp_path):
+    """冻结态 bundle 缺 VERSION → 回退 "0.0.0"，不阻塞启动。"""
+    module = _load_config_copy(tmp_path)
+    assert module.APP_VERSION == "0.0.0"
