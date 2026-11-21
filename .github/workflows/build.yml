@@ -301,3 +301,45 @@ jobs:
             dist/text2sql-agent/
           if-no-files-found: error
           retention-days: 14
+
+  # tag 触发时发布 Release：内网高速下载构建产物并附安装包 + 版本说明。
+  # always() 使个别 OS 失败（如 Linux 修复中）仍发布已成功产物。
+  release:
+    name: release
+    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: text2sql-agent-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(artifacts/*.dmg artifacts/*.exe artifacts/*.AppImage)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no installer artifacts found"; exit 1
+          fi
+          printf 'attaching: %s\n' "${files[@]}"
+          notes="docs/release-notes/${{ github.ref_name }}.md"
+          if [ -f "$notes" ]; then
+            gh release create "${{ github.ref_name }}" "${files[@]}" \
+              --title "溯算编程 · Text2SQL 智能体 ${{ github.ref_name }}" \
+              --notes-file "$notes"
+          else
+            gh release create "${{ github.ref_name }}" "${files[@]}" \
+              --title "溯算编程 · Text2SQL 智能体 ${{ github.ref_name }}" \
+              --generate-notes
+          fi
