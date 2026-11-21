@@ -7,6 +7,7 @@ import streamlit as st
 from app.bootstrap import initialize_system
 from app.ui_icons import icon_header, icon_line
 from config import (
+    APP_VERSION,
     EMBEDDING_MODEL,
     EMBEDDING_PROVIDER,
     FEW_SHOT_ENABLED,
@@ -15,6 +16,7 @@ from config import (
     SQLITE_PATH,
     UPLOAD_MAX_BYTES,
 )
+from core.update_checker import get_cached_update
 from core.utils.upload_limits import UploadValidationError, read_uploaded_text
 
 project_root = Path(__file__).resolve().parent.parent
@@ -195,11 +197,34 @@ html,body{{margin:0;padding:0;background:transparent;}}
     )
 
 
+def _render_update_banner() -> None:
+    """新版提示横幅（自动更新 spec §3.4）。
+
+    读后台检查器的线程安全缓存（非阻塞、无网络）；有新版且未按版本关闭时
+    显示 info + 下载链接 + 关闭按钮。关闭只记录被关闭的版本号，
+    更新版本出现时横幅会重新触发。
+    """
+    update = get_cached_update()
+    if update is None:
+        return
+    latest = update["latest_version"]
+    if st.session_state.get("update_dismissed") == latest:
+        return
+    st.info(f"🎉 发现新版本 v{latest}（当前 v{APP_VERSION}）")
+    st.link_button("下载更新", update["url"])
+    if st.button("关闭", key="dismiss_update"):
+        st.session_state["update_dismissed"] = latest
+        st.rerun()
+
+
 def render_sidebar() -> None:
     with st.sidebar:
         if LOGO_PATH.exists():
             _render_sidebar_logo()
         st.markdown(icon_header("控制中心", "settings", level=1, size=22), unsafe_allow_html=True)
+
+        # 新版提示（有新版且未关闭时才渲染，不影响既有控件）
+        _render_update_banner()
 
         # 系统状态卡片
         st.markdown(icon_header("系统状态", "activity", level=3), unsafe_allow_html=True)

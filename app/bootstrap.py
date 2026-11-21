@@ -59,11 +59,16 @@ from config import (
     SQLITE_PATH,
 )
 from core.app_context import ApplicationContext
+from core.update_checker import start_update_checker
 
 
 def initialize_system():
     """初始化系统组件（委托给 ApplicationContext）"""
     logger.info("开始初始化系统...")
+
+    # 更新检查后台线程（幂等、daemon、立即返回不阻塞 UI）；
+    # 独立于系统初始化成败，UPDATE_CHECK_ENABLED=False 时不起线程。
+    start_update_checker()
 
     app_ctx = ApplicationContext(config={
         'sqlite_path': SQLITE_PATH,
