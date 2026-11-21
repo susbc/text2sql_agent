@@ -154,6 +154,21 @@ LOG_FILE = DATA_DIR / "logs" / "app.log" if _FROZEN else PROJECT_ROOT / "logs" /
 STREAMLIT_SERVER_PORT = parse_env_int("STREAMLIT_SERVER_PORT", 8501)
 STREAMLIT_HEAD = parse_env_bool("STREAMLIT_HEAD", True)
 
+# ==================== 版本与更新检查配置 ====================
+# 运行时版本号：单一事实源＝根 VERSION 文件（与 spec plist/CI 同源）；
+# 冻结态 VERSION 由 spec datas 收集到 config.py 同级（_internal），故同路径可读。
+# 任何读取失败（缺失/不可读/解码错误）回退 "0.0.0"，绝不阻塞启动。
+try:
+    APP_VERSION = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+except Exception:
+    APP_VERSION = "0.0.0"
+
+# 定期检查 GitHub Releases 有无新版本，侧栏横幅提示（可关闭）；
+# 不自动下载/替换/重启（自动更新 spec §3.3）。
+UPDATE_CHECK_ENABLED = parse_env_bool("UPDATE_CHECK_ENABLED", True)
+UPDATE_CHECK_INTERVAL_HOURS = parse_env_int("UPDATE_CHECK_INTERVAL_HOURS", 6)
+UPDATE_GITHUB_REPO = os.getenv("UPDATE_GITHUB_REPO", "susbc/text2sql_agent")
+
 # ==================== 历史配置 ====================
 # 历史记录保留条数
 HISTORY_MAX_RECORDS = parse_env_int("HISTORY_MAX_RECORDS", 1000)

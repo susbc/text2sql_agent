@@ -16,7 +16,8 @@
   其 import 必须显式冻结）、streamlit 运行时动态导入、sqlglot 方言。
 - datas：根 app.py（resolve_main_script → bundle_dir/app.py）、app/ 与 core/ 源码
   树（__file__ 相对路径回退）、semantic_models/（首跑复制到 DATA_DIR）、
-  data/seed_*.sql（SQLiteClient._SEED_DIR＝bundle/data）、assets/、schema.sql。
+  data/seed_*.sql（SQLiteClient._SEED_DIR＝bundle/data）、assets/、schema.sql、
+  VERSION（config.APP_VERSION 运行时读取，落 _internal 与 config 同级）。
 
 数据不落 bundle：冻结态 config.DATA_DIR＝platformdirs.user_data_dir，SQLite/
 logs/.env/index_cache 全在用户数据目录（spec §5.1）。
@@ -170,6 +171,9 @@ datas += [
     # Streamlit 主脚本必须在 bundle 根：resolve_main_script() → bundle_dir/app.py。
     (str(PROJECT_ROOT / "app.py"), "."),
     (str(PROJECT_ROOT / "schema.sql"), "."),
+    # 运行时版本号：config.APP_VERSION 读 PROJECT_ROOT/VERSION。冻结态 config 在
+    # PYZ 内，__file__ 落 _internal（＝datas 目标 "."），故 VERSION 须同级收集。
+    (str(PROJECT_ROOT / "VERSION"), "."),
     # SQLiteClient._SEED_DIR = Path(__file__).parents[2]/"data" → bundle/data。
     (str(PROJECT_ROOT / "data" / "seed_business.sql"), "data"),
     (str(PROJECT_ROOT / "data" / "seed_history.sql"), "data"),
